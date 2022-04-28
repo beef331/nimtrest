@@ -1,37 +1,43 @@
-import std/[random, terminal]
+import std/[random, terminal, colors]
 
 const
-  WorldSize = 10
+  WorldSize = 20
   WorldArea = WorldSize * WorldSize
 
 type
   Id = enum
     none
-    water = ansiForegroundColorCode(fgBlue) & "W" & ansiResetCode
-    sand = ansiForegroundColorCode(fgYellow) & "S" & ansiResetCode
-    grass = ansiForegroundColorCode(fgWhite) & ansiStyleCode(styleBright) & "G" & ansiResetCode
-    trees = ansiForegroundColorCode(fgGreen) & ansiStyleCode(styleDim) & "T" & ansiResetCode
-    forest = ansiForegroundColorCode(fgGreen) & "F" & ansiResetCode
+    water = ansiBackgroundColorCode(colAqua) & " " & ansiResetCode
+    sand = ansiBackgroundColorCode(colSandyBrown) & " " & ansiResetCode
+    grass = ansiBackgroundColorCode(colLimeGreen) & " " & ansiResetCode
+    trees = ansiBackgroundColorCode(colGreen) & " " & ansiResetCode
+    forest = ansiBackgroundColorCode(colDarkGreen) & " " & ansiResetCode
+    mountain = ansiBackgroundColorCode(colDarkGray) & " " & ansiResetCode
+    mountainTop = ansiBackgroundColorCode(colWhite) & " " & ansiResetCode
+
+
   MyData = array[WorldArea, Id]
   
 iterator adjacentIndices*(myData: MyData, ind: int): int =
   if ind mod WorldSize > 0:
     yield ind - 1
-  if ind mod WorldSize < WorldSize - 1:
+  if ind mod WorldSize + 1 < WorldSize:
     yield ind + 1
   if ind >= WorldSize:
     yield ind - WorldSize
-  if ind + WorldSize < myData.len:
+  if ind + WorldSize <= myData.high:
     yield ind + WorldSize
     
 proc getValid(id: Id): set[Id] =
   case id
   of none: {}
-  of water: {sand}
-  of sand: {water, grass}
-  of grass: {sand, trees}
-  of trees: {grass, forest}
-  of forest: {trees}
+  of water: {sand, grass, water}
+  of sand: {water, grass, sand}
+  of grass: {sand, trees, grass}
+  of trees: {grass, forest, trees}
+  of forest: {trees, forest}
+  of mountain: {forest, trees, mountaintop, mountain}
+  of mountainTop: {mountain, mountaintop}
   
 proc hasNone(data: MyData): bool =
   for x in data:
@@ -45,7 +51,7 @@ proc nicePrint(myData: MyData) =
       stdout.writeLine(myStr)
       myStr.setLen(0)
     myStr.add $id
-    myStr.add " "
+    myStr.add $id
   stdout.flushFile()
 
 proc generate(myData: var MyData, start: int) =
@@ -68,11 +74,14 @@ proc generate(myData: var MyData, start: int) =
             valid = valid * myData[adjacent].getValid
       if valid == {}:
         myData[ind] = rand(succ(none)..Id.high)
+        echo "No valid so putting, ", myData[ind]
       else:
         var val = rand(succ(none)..Id.high)
         while val notin valid:
           val = rand(succ(none)..Id.high)
         myData[ind] = val
+        if myData[ind] == mountaintop:
+          echo valid
 
 randomize()
 
