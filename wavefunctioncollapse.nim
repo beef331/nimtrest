@@ -38,17 +38,33 @@ iterator adjacentTiles(myData: var MyData, ind: int): var set[Id]=
     yield myData.placementData[ind + WorldSize]
 
 
+iterator adjacentTiles(myData: MyData, ind: int): set[Id]=
+  let
+    x = ind mod WorldSize
+    y = ind div WorldSize
+  if x > 0:
+    yield myData.placementData[ind - 1]
+
+  if y > 0:
+    yield myData.placementData[ind - WorldSize]
+
+  if x + 1 < WorldSize:
+    yield myData.placementData[ind + 1]
+
+  if y + 1 < WorldSize:
+    yield myData.placementData[ind + WorldSize]
+
+
 proc getAllowedNeighbours(id: Id): set[Id] =
   case id
   of none: {}
   of water: {sand, water, grass}
   of sand: {water, grass, sand}
-  of grass: {sand, water, grass, trees, forest, mountain}
+  of grass: {sand, grass, trees, forest, mountain}
   of trees: {grass, forest, trees, water}
   of forest: {trees, forest, mountain, grass}
   of mountain: {mountaintop, mountain, forest}
   of mountainTop: {mountain, mountainTop}
-
 
 
 proc nicePrint(myData: MyData) =
@@ -67,22 +83,23 @@ proc randomPick(s: set[Id]): Id =
   while result notin s:
     result = rand(Id.low.succ .. Id.high)
 
+proc isValidPlacement(myData: MyData, index: int, id: Id): bool =
+  result = true
+  for adjacentTile in myData.adjacentTiles(index):
+    if id.getAllowedNeighbours() * adjacentTile == {}:
+      return false
+
 proc setAllowedIds(myData: var MyData, index: int) =
   var
     entry: Id
     canEntryHere = false
   while not canEntryHere:
     entry = myData.placementData[index].randomPick()
-    block entryPlace:
-      for adjacentTile in myData.adjacentTiles(index):
-        if adjacentTile * entry.getAllowedNeighbours() == {}:
-          break entryPlace
-      canEntryHere = true
+    canEntryHere = myData.isValidPlacement(index, entry)
 
   for adjacentTile in myData.adjacentTiles(index):
     adjacentTile = adjacentTile * entry.getAllowedNeighbours()
   myData.tileData[index] = entry
-
 
 proc generateWorld(): MyData =
   for x in result.placementData.mitems:
