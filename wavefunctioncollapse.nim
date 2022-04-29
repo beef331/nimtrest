@@ -4,16 +4,18 @@ const
   WorldSize = 30
   WorldArea = WorldSize * WorldSize
 
+proc colouredBlock(col: Color): string = ansiBackgroundColorCode(col) & " " & ansiResetCode
+
 type
   Id = enum
     none = ""
-    water = ansiBackgroundColorCode(colAqua) & " " & ansiResetCode
-    sand = ansiBackgroundColorCode(colSandyBrown) & " " & ansiResetCode
-    grass = ansiBackgroundColorCode(colLimeGreen) & " " & ansiResetCode
-    trees = ansiBackgroundColorCode(colGreen) & " " & ansiResetCode
-    forest = ansiBackgroundColorCode(colDarkGreen) & " " & ansiResetCode
-    mountain = ansiBackgroundColorCode(colDarkGray) & " " & ansiResetCode
-    mountainTop = ansiBackgroundColorCode(colWhite) & " " & ansiResetCode
+    water = colAqua.colouredBlock()
+    sand = colSandyBrown.colouredBlock()
+    grass = colLimeGreen.colouredBlock()
+    trees = colGreen.colouredBlock()
+    forest = colDarkGreen.colouredBlock()
+    mountain = colDarkGray.colouredBlock()
+    mountainTop = colWhite.colouredBlock()
 
   MyData = object
     placementData: array[WorldArea, set[Id]]
