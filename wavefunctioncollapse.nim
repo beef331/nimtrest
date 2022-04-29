@@ -1,12 +1,12 @@
 import std/[random, terminal, colors]
 
 const
-  WorldSize = 20
+  WorldSize = 30
   WorldArea = WorldSize * WorldSize
 
 type
   Id = enum
-    none
+    none = ""
     water = ansiBackgroundColorCode(colAqua) & " " & ansiResetCode
     sand = ansiBackgroundColorCode(colSandyBrown) & " " & ansiResetCode
     grass = ansiBackgroundColorCode(colLimeGreen) & " " & ansiResetCode
@@ -15,80 +15,85 @@ type
     mountain = ansiBackgroundColorCode(colDarkGray) & " " & ansiResetCode
     mountainTop = ansiBackgroundColorCode(colWhite) & " " & ansiResetCode
 
+  MyData = object
+    placementData: array[WorldArea, set[Id]]
+    tileData: array[WorldArea, Id]
 
-  MyData = array[WorldArea, Id]
-  
-iterator adjacentIndices*(myData: MyData, ind: int): int =
-  if ind mod WorldSize > 0:
-    yield ind - 1
-  if ind mod WorldSize + 1 < WorldSize:
-    yield ind + 1
-  if ind >= WorldSize:
-    yield ind - WorldSize
-  if ind + WorldSize <= myData.high:
-    yield ind + WorldSize
-    
-proc getValid(id: Id): set[Id] =
+const fullIdSet = {succ(none) .. Id.high}
+
+iterator adjacentTiles(myData: var MyData, ind: int): var set[Id]=
+  let
+    x = ind mod WorldSize
+    y = ind div WorldSize
+  if x > 0:
+    yield myData.placementData[ind - 1]
+
+  if y > 0:
+    yield myData.placementData[ind - WorldSize]
+
+  if x + 1 < WorldSize:
+    yield myData.placementData[ind + 1]
+
+  if y + 1 < WorldSize:
+    yield myData.placementData[ind + WorldSize]
+
+
+proc getAllowedNeighbours(id: Id): set[Id] =
   case id
   of none: {}
-  of water: {sand, grass, water}
+  of water: {sand, water, grass}
   of sand: {water, grass, sand}
-  of grass: {sand, trees, grass}
-  of trees: {grass, forest, trees}
-  of forest: {trees, forest}
-  of mountain: {forest, trees, mountaintop, mountain}
-  of mountainTop: {mountain, mountaintop}
-  
-proc hasNone(data: MyData): bool =
-  for x in data:
-    if x == none:
-      return true
+  of grass: {sand, water, grass, trees, forest, mountain}
+  of trees: {grass, forest, trees, water}
+  of forest: {trees, forest, mountain, grass}
+  of mountain: {mountaintop, mountain, forest}
+  of mountainTop: {mountain, mountainTop}
 
-proc nicePrint(myData: MyData) = 
+
+
+proc nicePrint(myData: MyData) =
   var myStr = ""
-  for i, id in myData:
+  for i, id in myData.tileData:
     if i mod WorldSize == 0:
       stdout.writeLine(myStr)
       myStr.setLen(0)
     myStr.add $id
     myStr.add $id
+  if myStr.len > 0:
+    stdout.writeLine(myStr)
   stdout.flushFile()
 
-proc generate(myData: var MyData, start: int) =
-  var 
-    visted: set[0..WorldArea] = {range[0..WorldArea] start}
-    toVisit: seq[int]
-  for x in myData.adjacentIndices(start):
-    toVisit.add x
-  while toVisit.len > 0:
-    let ind = toVisit.pop
-    if myData[ind] == none:
-      var valid: set[Id]
-      for adjacent in myData.adjacentIndices(ind):
-        if adjacent notin visted:
-          toVisit.add adjacent
-        if myData[adjacent] != none:
-          if valid == {}:
-            valid = myData[adjacent].getValid
-          else:
-            valid = valid * myData[adjacent].getValid
-      if valid == {}:
-        myData[ind] = rand(succ(none)..Id.high)
-        echo "No valid so putting, ", myData[ind]
-      else:
-        var val = rand(succ(none)..Id.high)
-        while val notin valid:
-          val = rand(succ(none)..Id.high)
-        myData[ind] = val
-        if myData[ind] == mountaintop:
-          echo valid
+proc randomPick(s: set[Id]): Id =
+  while result notin s:
+    result = rand(Id.low.succ .. Id.high)
+
+proc setAllowedIds(myData: var MyData, index: int) =
+  var
+    entry: Id
+    canEntryHere = false
+  while not canEntryHere:
+    entry = myData.placementData[index].randomPick()
+    block entryPlace:
+      for adjacentTile in myData.adjacentTiles(index):
+        if adjacentTile * entry.getAllowedNeighbours() == {}:
+          break entryPlace
+      canEntryHere = true
+
+  for adjacentTile in myData.adjacentTiles(index):
+    adjacentTile = adjacentTile * entry.getAllowedNeighbours()
+  myData.tileData[index] = entry
+
+
+proc generateWorld(): MyData =
+  for x in result.placementData.mitems:
+    x = fullIdSet
+  result.setAllowedIds(0)
+  for ind in 1..<result.placementData.len:
+    result.setAllowedIds(ind)
 
 randomize()
+let data = generateWorld()
+data.nicePrint()
 
-var myData: MyData
-let startInd = rand(0..<myData.len)
-myData[startInd] = rand(succ(none)..Id.high)
-myData.generate(startInd)
 
-myData.nicePrint()
 
