@@ -39,7 +39,6 @@ iterator adjacentTiles(myData: var MyData, ind: int): var set[Id]=
   if y + 1 < WorldSize:
     yield myData.placementData[ind + WorldSize]
 
-
 iterator adjacentTiles(myData: MyData, ind: int): set[Id]=
   let
     x = ind mod WorldSize
@@ -56,7 +55,6 @@ iterator adjacentTiles(myData: MyData, ind: int): set[Id]=
   if y + 1 < WorldSize:
     yield myData.placementData[ind + WorldSize]
 
-
 proc getAllowedNeighbours(id: Id): set[Id] =
   case id
   of none: {}
@@ -67,7 +65,6 @@ proc getAllowedNeighbours(id: Id): set[Id] =
   of forest: {trees, forest, mountain, grass}
   of mountain: {mountaintop, mountain, forest}
   of mountainTop: {mountain, mountainTop}
-
 
 proc nicePrint(myData: MyData) =
   var myStr = ""
@@ -81,10 +78,6 @@ proc nicePrint(myData: MyData) =
     stdout.writeLine(myStr)
   stdout.flushFile()
 
-proc randomPick(s: set[Id]): Id =
-  while result notin s:
-    result = rand(Id.low.succ .. Id.high)
-
 proc isValidPlacement(myData: MyData, index: int, id: Id): bool =
   result = true
   for adjacentTile in myData.adjacentTiles(index):
@@ -96,7 +89,7 @@ proc setAllowedIds(myData: var MyData, index: int) =
     entry: Id
     canEntryHere = false
   while not canEntryHere:
-    entry = myData.placementData[index].randomPick()
+    entry = myData.placementData[index].sample
     canEntryHere = myData.isValidPlacement(index, entry)
 
   for adjacentTile in myData.adjacentTiles(index):
