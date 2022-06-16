@@ -1,4 +1,4 @@
-import std/[typetraits, macros, genasts, strformat]
+import std/[typetraits, macros, genasts, strformat, enumerate]
 
 type Component = object of RootObj
 
@@ -32,7 +32,6 @@ proc makeArchetype(tup: typedesc[ComponentTuple]): Archetype[tup] =
   result = Archetype[tup](
     typeCount: tupLen,
     types: newSeqOfCap[pointer](tupLen),
-    stride: sizeof(default tup),
     componentOffset: newSeqOfCap[int](tupLen)
   )
   let def = default(tup)
@@ -40,17 +39,28 @@ proc makeArchetype(tup: typedesc[ComponentTuple]): Archetype[tup] =
   for field in def.fields:
     result.types.add field.getTypeInfo()
     result.componentOffset.add offset
-    offset.inc sizeof(field)
+    offset.inc sizeof(field) - sizeof(pointer)
+  result.stride = offset
 
 proc len*(arch: ArchetypeBase): int = arch.data.len div arch.stride
 
 proc `$`[T: ComponentTuple](arch: Archetype[T]): string =
-  const typStr = $T
+  const
+    typStr = $T
+    tupLen = tupleLen(T)
   result = fmt"Archetype[{typStr}]("
   let len = arch.len
   for i in 0..<len:
-    let data = cast[ptr T](arch.data[i * arch.stride].addr)
-    result.add $data[]
+    let def = default T
+    var ind = 0
+    for field in def.fields:
+      let
+        startField = arch.data[i * arch.stride + arch.componentOffset[ind]].addr
+        data = cast[ptr typeof(field)](cast[int](startField) - sizeof(pointer))
+      result.add $data[]
+      if ind < tupLen - 1:
+        result.add ", "
+      inc ind
     if i < len - 1:
       result.add ", "
   result.add ")"
@@ -70,15 +80,20 @@ proc filter(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple])
         result.add arch
 
 proc add*[T](arch: Archetype[T], tup: sink T) =
-  arch.data.setLen(arch.data.len + sizeof(tup))
-  arch.data[arch.data.len - sizeof(tup)].addr.copyMem(tup.addr, sizeof(tup))
+  for field in tup.fields:
+    const realSize = sizeof(field) - sizeof(pointer) # Dont need type information
+    let startLen = arch.data.len
+    arch.data.setLen(arch.data.len + realSize)
+    let fieldStart = cast[pointer](cast[int](field.addr) + sizeof(pointer))
+    arch.data[startLen].addr.copyMem(fieldStart, realSize)
 
 macro generateAccess(arch: ArchetypeBase, ind: int, indArray: array, tup: ComponentTuple): untyped =
   result = nnkTupleConstr.newTree()
   for i, val in tup.getTypeImpl:
     result.add:
       genast(val, ind, indArray, tup, i):
-        cast[ptr val](arch.data[ind * arch.stride + (arch.componentOffset[indArray[i]])].addr)
+        let element = arch.data[ind * arch.stride + arch.componentOffset[indArray[i]]].addr
+        cast[ptr val](cast[int](element) - sizeof(pointer))
 
 iterator foreach*(arch: ArchetypeBase, tup: typedesc[ComponentTuple]): auto =
   var
@@ -111,7 +126,7 @@ iterator foreach*(archs: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]
 
 when isMainModule:
   type
-    Position = object of Component
+    Position {.packed.} = object of Component
       x, y, z: float32
     Health = object of Component
       current, max: int32
@@ -134,10 +149,11 @@ when isMainModule:
     pos.x = 300
     health.current = 100
     health.max = 130
+
   for (health, pos) in posHealth.foreach (Health, Position):
     assert pos[] == Position(x: 300, y: 10, z: 40)
     assert health[] == Health(current: 100, max: 130)
 
-  echo pos
+  echo $pos
   echo posHealth
   echo health
