@@ -126,7 +126,7 @@ iterator foreach*(archs: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]
 
 when isMainModule:
   type
-    Position {.packed.} = object of Component
+    Position = object of Component
       x, y, z: float32
     Health = object of Component
       current, max: int32
