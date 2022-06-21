@@ -51,9 +51,17 @@ macro mock*(name: static string, defaultOrType: typed) =
       var myProc*: defaultOrType
       when myProc is (proc() {.nimcall.}):
         template mockedProc*{callName()}(): untyped =
-          myProc()
+          {.noRewrite.}:
+            when makeImportPath(callName) == path:
+              myProc()
+            else:
+              callName()
       else:
         template mockedProc*{callName(args)}(args: varargs[typed]): untyped =
-          myProc(args)
+          {.noRewrite.}:
+            when makeImportPath(callName) == path:
+              myProc(args)
+            else:
+              callName(args)
   else:
     error("Is not a 'typedesc' or 'proc'", defaultOrType)
