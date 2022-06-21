@@ -1,2 +1,2 @@
 import mocker
-mock("doThing", proc() = echo "Mocked!")
+mock("tmocker.doThing", proc() = echo "Mocked!")
