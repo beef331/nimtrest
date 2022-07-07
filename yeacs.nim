@@ -7,12 +7,13 @@ proc onlyUniqueValues(t: typedesc[tuple]): bool =
   for nameA, fieldA in default(t).fieldPairs:
     for nameB, fieldB in default(t).fieldPairs:
       when nameA != nameB and fieldA is typeof(fieldB):
-        result = false
+        return false
 
 proc fromComponent(t: typedesc[tuple]): bool =
   result = true
   for x in default(t).fields:
-    result = x is Component
+    if not(x is Component):
+      return false
 
 type
   ArchetypeBase = ref object of RootObj
