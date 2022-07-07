@@ -12,7 +12,7 @@ proc onlyUniqueValues(t: typedesc[tuple]): bool =
 proc fromComponent(t: typedesc[tuple]): bool =
   result = true
   for x in default(t).fields:
-    if not(x is Component):
+    if x isnot Component:
       return false
 
 type
