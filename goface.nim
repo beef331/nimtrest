@@ -160,6 +160,9 @@ macro toInterface(val: RootRef, t: typedesc): untyped =
         var vtableName {.global.}: seq[pointer]
         res
 
+template emitConverter*(theType, theConcept: typedesc): untyped =
+  converter asInterface(theVal: theType): auto = theVal.toInterface(theConcept)
+
 {.experimental: "dotOperators".}
 macro `.()`*(inFace: Interface, procName: untyped, args: varargs[typed]): untyped =
   let
@@ -194,12 +197,17 @@ type MyStream[T] = ref object of RootRef
 proc read[T](self: MyStream[T], buffer: openArray[T]): Option[int] = echo typeof(self), " Reader"
 proc write[T](self: MyStream[T], buffer: openArray[T], num: ref int) = echo typeof(self), " Writer"
 
+
+converter asInterface(theVal: MyStream[char]): auto = theVal.toInterface(ReaderWriter[char])
+
 type MyOtherStream[T] = ref object of RootRef
 
 proc read[T](self: MyOtherStream[T], buffer: openArray[T]): Option[int] = echo typeof(self), " Reader"
 proc write[T](self: MyOtherStream[T], buffer: openArray[T], num: ref int) = echo typeof(self), " Writer"
 
-for x in [MyStream[char]().toInterface(ReaderWriter[char]), MyOtherStream[char]().toInterface(ReaderWriter[char])]:
+emitConverter MyOtherStream[char], ReaderWriter[char]
+
+for x in [MyStream[char]().toInterface(ReaderWriter[char]), MyOtherStream[char](), MyStream[char]()]:
   discard x.read("")
   x.write("hello", nil)
 
