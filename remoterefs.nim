@@ -98,6 +98,17 @@ proc new*[T, AllocProc, FreeProc](Y: typedesc[RemoteRef[Counts[T], AllocProc, Fr
   (result.theData) = val
   inc result.count
 
+proc create*[T, AllocProc, FreeProc](Y: typedesc[RemoteRef[Counts[T], AllocProc, FreeProc]], size: int): Y =
+  ## Allocates a pointer to T with allocators.
+  ## With `JoinedRef` it takes  `size` + `sizeof(JoinedCount[T])`.
+  ## With `SeperatedRef` it takes  `size` + `sizeof(T)`.
+  when result.data is JoinedCount:
+    (result.thePtr) = cast[JoinedCount[T]](result.allocProc(size + sizeof(JoinedCount[T])))
+  elif result.data is SeperateCount:
+    (result.thePtr) = cast[ptr T](result.allocProc(sizeof(T) + size))
+    new result.data.refCount
+  inc result.count
+
 proc new*[T, AllocProc, FreeProc](Y: typedesc[RemoteRef[Counts[T], AllocProc, FreeProc]]): Y =
   ## Allocates a 0'init version of `T` with the type allocators.
   new(Y, default(T))
@@ -145,3 +156,61 @@ when isMainModule:
     test.x = 300
     echo test.x
     echo test.y
+
+  type
+    MySeqInternal[T] = object
+      len: int
+      data: UncheckedArray[T]
+    SpiSeq[T] = JoinedRef[MySeqInternal[T], spiAlloc, spiFree]
+
+
+  proc len*[T](spiSeq: SpiSeq[T]): int = spiSeq[].len
+  proc high*[T](spiSeq: SpiSeq[T]): int = spiSeq.len - 1
+
+  proc newSpiSeq*[T](size: int): SpiSeq[T] =
+    result = create(SpiSeq[T], size)
+    result.len = size
+
+
+  proc `[]`*[T](spiSeq: SpiSeq[T], ind: int): T =
+    when compileOption("checks"):
+      assert ind in spiSeq.len
+    spiSeq[].data[ind]
+
+  proc `[]=`*[T](spiSeq: SpiSeq[T], ind: int, val: T) =
+    when compileOption("checks"):
+      assert ind in spiSeq.len
+    spiSeq[].data[ind] = val
+
+  iterator mitems*[T](spiSeq: SpiSeq[T]): var T =
+    for i in 0..<spiSeq.len:
+      yield spiSeq[i]
+
+  iterator items*(spiSeq: SpiSeq): auto =
+    for i in 0..<spiSeq.len:
+      yield spiSeq[i]
+
+  iterator pairs*[T](spiSeq: SpiSeq[T]): (int, T) =
+    for i in 0..<spiSeq.len:
+      yield (i, spiSeq[i])
+
+  proc `$`*(spiSeq: SpiSeq): string =
+    result = "["
+    for ind, val in spiSeq:
+      result.add $val
+      if ind < spiSeq.high:
+        result.add ", "
+    result.add ']'
+
+
+  var mySeq = newSpiSeq[byte](100)
+  assert mySeq.high == 99
+  assert mySeq.len == 100
+  for x in mySeq:
+    assert x == 0
+  mySeq[0] = 30
+  mySeq[1] = 50
+  assert mySeq[0] == 30
+  assert mySeq[1] == 50
+
+
