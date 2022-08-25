@@ -18,9 +18,10 @@ type
 
   Counts[T] = SeperateCount[T] or JoinedCount[T]
 
-  RemoteRef[T; allocProc: static AllocProc; freeProc: static DeallocProc] = object
+  RemoteRef*[T; allocProc: static AllocProc; freeProc: static DeallocProc] = object
     ## The actual type that holds the statically typed custom allocated types.
     ## This likely could be a distinct but that seems a bit more tedious to deal with
+    ## Only exposed for when the compiler cannot reason the complex tree iterators seem to cause this.
     data: T
 
   ## Exposed aliases that should be used, in theory should be easy to add any other forms of refcount locations

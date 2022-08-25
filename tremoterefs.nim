@@ -1,4 +1,4 @@
-import remoterefs
+import remoterefs {.all.}
 proc spiAlloc(size: int): pointer {.inline.} =
   alloc(size)
 proc spiFree(p: pointer) {.inline.} =
@@ -46,8 +46,7 @@ type
   MySeqInternal[T] = object
     len: int
     data: UncheckedArray[T]
-  SpiSeq[T] = JoinedRef[MySeqInternal[T], spiAlloc, spiFree]
-
+  SpiSeq[T] = RemoteRef[JoinedCount[MySeqInternal[T]], spiAlloc, spiFree]
 
 proc len*[T](spiSeq: SpiSeq[T]): int = spiSeq[].len
 proc high*[T](spiSeq: SpiSeq[T]): int = spiSeq.len - 1
@@ -67,15 +66,13 @@ proc `[]=`*[T](spiSeq: SpiSeq[T], ind: int, val: T) =
     assert ind in 0..spiSeq.high
   spiSeq[].data[ind] = val
 
-template forMIt*(spiSeq: SpiSeq, body: untyped) =
+iterator items*[T](spiSeq: SpiSeq[T]): T =
   for i in 0..spiSeq.high:
-    template it: auto {.inject.} = spiSeq[i]
-    body
+    yield spiSeq[i]
 
-template forIt*(spiSeq: SpiSeq, body: untyped) =
+iterator mitems*[T](spiSeq: SpiSeq[T]): var T =
   for i in 0..spiSeq.high:
-    let it {.inject.} = spiSeq[i]
-    body
+    yield spiSeq[i]
 
 iterator pairs*[T](spiSeq: SpiSeq[T]): (int, T) =
   for i in 0..spiSeq.high:
@@ -94,14 +91,15 @@ var mySeq = newSpiSeq[byte](100)
 assert mySeq.high == 99
 assert mySeq.len == 100
 
-mySeq.forIt:
+for it in mySeq.items:
   assert it == 0
 
-mySeq.forMit:
+for it in mySeq.mitems:
   it = 255
 
-mySeq.forIt:
-  assert it == 255
+for x in mySeq:
+  assert x == 255
+
 
 mySeq[0] = 30
 mySeq[1] = 50
