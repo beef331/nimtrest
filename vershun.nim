@@ -1,95 +1,45 @@
-import std/[macros, genasts, streams]
+import std/[macros, genasts]
+type
+  VersionedData* = concept v, type V
+    V.Version is static Ordinal
 
-proc getVersionParam(node: NimNode): NimNode =
-  let node =
-    if node.kind != nnkTypeDef:
-      node.getImpl
-    elif node.kind == nnkBracket and node[0].eqIdent"typedesc":
-      node[1].getTypeImpl
+proc migrateData*[T: VersionedData](verDat: T): auto =
+  mixin migrate
+  when verDat.Version != typeof(verDat.Version).high:
+    migrateData(migrate(verDat))
+  else:
+    verDat
+
+proc replace*(n, toReplace, replaceWith: NimNode) =
+  for i, x in n:
+    if x == toReplace:
+      n[i] = replaceWith
     else:
-      node
-  if node[1].kind == nnkGenericParams:
-    # We assume it has a single generic param and that's what we want
-    result = node[1][0]
+      x.replace(toReplace, replaceWith)
 
-macro migrateData*(data: typed): untyped =
-  var
-    typeImpl = data.getTypeInst
-    descrim = typeImpl[^1]
-  if typeImpl.kind == nnkBracketExpr:
-    # Get base type from the type instantiation
-    typeImpl = typeImpl[0].getImpl
+macro forEachVersion*(theRange: Ordinal, theStatement: untyped): untyped =
+  result = nnkCaseStmt.newTree(theRange)
+  for i, n in theRange.getTypeImpl: ## Doesnt work for range types, to be fixed
+    if i > 0:
+      let copiedTree = theStatement.copyNimTree()
+      copiedTree.replace(ident"it", n)
+      result.add nnkOfBranch.newTree(n, copiedTree)
 
-  if descrim == nil:
-    error("Cannot migrate data on type without version", data)
 
-  let
-    eImpl = descrim.getTypeImpl
-    eCount = eImpl.len - 2
-
-  result = nnkWhenStmt.newTree()
-  for i, enmVal in eImpl[1..^1]:
-    result.add nnkElifBranch.newTree(infix(descrim, "==", enmVal), data)
-    for migrate in i..<eCount:
-      result[^1][^1] = newCall("migrate", result[^1][^1])
-
-proc replace(node, toReplace, with: NimNode) =
-  for i, n in node:
-    if n.kind == nnkIdent and n.eqIdent toReplace:
-      node[i] = with
-    else:
-      n.replace(toReplace, with)
-
-macro unpackToData(target: typedesc, descrim: enum, loadCall: untyped): untyped =
-  ## Generates:
-    #var res: `target`
-    #case `descrim`
-    #of firstEnumVal:
-      #let data = loadCall(type[firstEnumVal])
-      #re  s = migrateData(data, firstEnumVal)
-    #of secondEnumVal:
-      #let data = loadCall(type[secondEnumVal])
-      #res = migrateData(data, secondEnumVal)
-  let
-    eImpl = descrim.getTypeImpl
-    resSym = genSym(nskVar, "res")
-    theTypeDef = target.getType[^1].getImpl
-    versionParam = theTypeDef.getVersionParam()
-  if versionParam == nil:
-    error("Cannot unpack data of a type without version", target)
-  var typeName = theTypeDef[0]
-
-  if typeName.kind == nnkPragmaExpr:
-    typeName = typeName[0]
-  let typeInst = nnkBracketExpr.newTree(typeName)
-
-  result = nnkCaseStmt.newTree(descrim)
-  for i, enmVal in eImpl[1..^1]:
-    let
-      typ = typeInst.copyNimTree()
-      loadCall = loadCall.copyNimTree()
-    typ.add enmVal
-    loadCall.replace(ident"Data", typ)
-    result.add nnkOfBranch.newTree(enmVal, newCall(bindsym"migrateData", loadCall))
-    result[^1][^1] = nnkAsgn.newTree(resSym, result[^1][^1])
-  result = genAst(body = result, res = resSym, target):
-    var res: target
-    body
-    res
-
+import std/streams
 type
   Version = enum
     ver00
     ver01
     ver02
-  MyData*[Ver: static Version] = object
-    when Ver == ver00:
+  MyData*[Version: static Version] = object
+    when Version == ver00:
       a: int
       b: string
-    elif Ver in {ver01, ver02}:
+    elif Version in {ver01, ver02}:
       age: int
       name: string
-      when Ver == ver02:
+      when Version == ver02:
         talent: string
 
   SaveData = MyData[Version.high]
@@ -110,15 +60,16 @@ proc saveData*(myData: SaveData, stream: Stream) =
   stream.write(ord(Version.high))
   stream.write(myData) # Streams write pointers for string/seqs this is just example
 
-proc loadData*(T: typedesc, stream: Stream): T =
-  mixin migrate
+proc loadData*(stream: Stream): SaveData =
   var id: Version
   stream.read(id)
-  unpackToData(T, id, stream.read(Data))
+  id.forEachVersion:
+    stream.read(MyData[it]).migrateData
 
 let
   personData = MyData[ver00](a: 32, b: "John")
   saveV2 = MyData[ver01](name: "liar", age: 600)
+  saveV3 = MyData[ver02](name: "jimmy", age: 32, talent: "jumping")
 
 var ss = newStringStream()
 ss.write(ver00)
@@ -127,7 +78,11 @@ ss.write(ver01)
 ss.write(saveV2)
 ss.setPosition(0)
 
-echo SaveData.loadData(ss)
-echo SaveData.loadData(ss)
+echo loadData(ss)
+echo loadData(ss)
 echo migrateData(personData)
+echo migrateData(saveV2)
+echo migrateData(saveV3)
+
+
 
