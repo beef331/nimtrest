@@ -1,7 +1,9 @@
-import std/[macros, genasts]
+import std/[macros, genasts, strformat]
 type
+  AllowedVersion = (range or enum or bool)
   VersionedData* = concept v, type V
-    V.Version is static Ordinal
+    V.Version is static
+    V.Version is AllowedVersion
 
 proc migrateData*[T: VersionedData](verDat: T): auto =
   mixin migrate
@@ -10,20 +12,31 @@ proc migrateData*[T: VersionedData](verDat: T): auto =
   else:
     verDat
 
-proc replace*(n, toReplace, replaceWith: NimNode) =
-  for i, x in n:
-    if x == toReplace:
-      n[i] = replaceWith
-    else:
-      x.replace(toReplace, replaceWith)
+iterator eachVal(n: NimNode): NimNode =
+ case n.getType.typeKind
+ of ntyEnum:
+   for i, n in n.getTypeImpl:
+     if i > 0:
+       yield n
+ of ntyBool:
+   yield newLit false
+   yield newLit true
+ of ntyRange:
+   let impl = n.getTypeImpl
+   for x in impl[^1][1].intVal .. impl[^1][2].intVal:
+     yield newCall(impl[^1][1].getType, newLit x)
+ else:
+   error(fmt"Expected 'range' or 'bool' or 'enum' for '{n.repr}', but got '{n.getType}'", n)
 
-macro forEachVersion*(theRange: Ordinal, theStatement: untyped): untyped =
+macro forEachVersion*(theRange: AllowedVersion, theStatement: untyped): untyped =
   result = nnkCaseStmt.newTree(theRange)
-  for i, n in theRange.getTypeImpl: ## Doesnt work for range types, to be fixed
-    if i > 0:
-      let copiedTree = theStatement.copyNimTree()
-      copiedTree.replace(ident"it", n)
-      result.add nnkOfBranch.newTree(n, copiedTree)
+  for entry in theRange.eachVal:
+    let newTree = newStmtList()
+    newTree.add:
+      genast(entry, theStatement):
+        const it {.inject.} = entry
+        theStatement
+    result.add nnkOfBranch.newTree(entry, newTree)
 
 
 import std/streams
@@ -84,5 +97,8 @@ echo migrateData(personData)
 echo migrateData(saveV2)
 echo migrateData(saveV3)
 
+true.forEachVersion:
+  discard
 
-
+range[0u8..3u8](3).forEachVersion:
+  discard

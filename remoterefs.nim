@@ -4,14 +4,14 @@ type
   AllocProc = proc(size: int): pointer {.inline.}
   DeallocProc = proc(p: pointer) {.inline.}
 
-  JoinedInternal[T] {.pure.} = object
+  JoinedInternal[T] = object
     ## This type exists for the cases where you want a ref count next to the data.
     refCount: int
     data: T
 
   JoinedCount[T]  = ptr JoinedInternal[T]
 
-  SeperateCount[T] {.pure.} = object
+  SeperateCount[T] = object
     ## This type exists for the cases where you want the refcount to be held elsewhere.
     refCount: ref int
     data: ptr T
