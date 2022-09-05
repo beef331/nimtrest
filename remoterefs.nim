@@ -1,17 +1,21 @@
+import std/typetraits
+type StackOnly* = concept s, type S
+    supportsCopyMem(S)
+
 type
   # Need a single convention, inline seems the best?
   # It increases the chance of inlined allocations, reducing overhead(hopefully this is 0 cost then)
   AllocProc = proc(size: int): pointer {.inline.}
   DeallocProc = proc(p: pointer) {.inline.}
 
-  JoinedInternal[T] = object
+  JoinedInternal[T: StackOnly] = object
     ## This type exists for the cases where you want a ref count next to the data.
     refCount: int
     data: T
 
-  JoinedCount*[T]  = ptr JoinedInternal[T]
+  JoinedCount*[T: StackOnly]  = ptr JoinedInternal[T]
 
-  SeperateCount*[T] = object
+  SeperateCount*[T: StackOnly] = object
     ## This type exists for the cases where you want the refcount to be held elsewhere.
     refCount: ref int
     data: ptr T
@@ -117,3 +121,10 @@ proc new*[T, AllocProc, FreeProc](Y: typedesc[RemoteRef[Counts[T], AllocProc, Fr
   ## Allocates a 0'init version of `T` with the type allocators.
   new(Y, default(T))
 
+when isMainModule:
+  assert string isnot StackOnly
+  assert (ref int) isnot StackOnly
+  assert int is StackOnly
+  assert float is StackOnly
+  assert array[1, int] is StackOnly
+  assert (int, int, string, array[1, int]) isnot StackOnly
