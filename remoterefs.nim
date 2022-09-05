@@ -9,9 +9,9 @@ type
     refCount: int
     data: T
 
-  JoinedCount[T]  = ptr JoinedInternal[T]
+  JoinedCount*[T]  = ptr JoinedInternal[T]
 
-  SeperateCount[T] = object
+  SeperateCount*[T] = object
     ## This type exists for the cases where you want the refcount to be held elsewhere.
     refCount: ref int
     data: ptr T

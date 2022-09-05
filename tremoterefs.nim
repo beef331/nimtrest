@@ -1,4 +1,4 @@
-import remoterefs {.all.}
+import remoterefs
 proc spiAlloc(size: int): pointer {.inline.} =
   alloc(size)
 proc spiFree(p: pointer) {.inline.} =
