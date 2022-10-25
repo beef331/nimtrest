@@ -1,7 +1,7 @@
 import std/[random, terminal, colors]
 
 const
-  WorldSize = 10
+  WorldSize = 30
   WorldArea = WorldSize * WorldSize
 
 proc colouredBlock(col: Color): string = ansiBackgroundColorCode(col) & " " & ansiResetCode
@@ -57,7 +57,7 @@ iterator adjacentTiles(myData: MyData, ind: int): set[Id]=
 
 proc getAllowedNeighbours(id: Id): set[Id] =
   case id
-  of none: fullIdSet
+  of none: {}
   of water: {sand, water, grass}
   of sand: {water, grass, sand}
   of grass: {sand, grass, trees, forest, mountain}
@@ -66,56 +66,30 @@ proc getAllowedNeighbours(id: Id): set[Id] =
   of mountain: {mountaintop, mountain, forest}
   of mountainTop: {mountain, mountainTop}
 
-proc isDone(myData: MyData): bool =
-  result = true
-  for tile in myData.placementData:
-    if tile.len > 0:
-      return false
-
-proc nicePrint(myData: MyData, failed = -1) =
+proc nicePrint(myData: MyData) =
   var myStr = ""
   for i, id in myData.tileData:
     if i mod WorldSize == 0:
       stdout.writeLine(myStr)
       myStr.setLen(0)
-    if i != failed:
-      myStr.add $id
-      myStr.add $id
-    else:
-      myStr.add colouredBlock(colRed)
-      myStr.add colouredBlock(colRed)
+    myStr.add $id
+    myStr.add $id
   if myStr.len > 0:
     stdout.writeLine(myStr)
   stdout.flushFile()
 
 proc isValidPlacement(myData: MyData, index: int, id: Id): bool =
-  var allowed: set[Id]
+  result = true
   for adjacentTile in myData.adjacentTiles(index):
-    for adj in adjacentTile:
-      allowed.incl adj.getAllowedNeighbours()
-  id in allowed
-
-proc getAllowedPlacables(myData: MyData, index: int): set[Id] =
-  for adjacentTile in myData.adjacentTiles(index):
-    for id in adjacentTile:
-      result = result + id.getAllowedNeighbours()
-  result = result * myData.placementData[index]
+    if id.getAllowedNeighbours() * adjacentTile == {}:
+      return false
 
 proc setAllowedIds(myData: var MyData, index: int) =
   var
     entry: Id
     canEntryHere = false
-    allowed: set[Id]
-  for adjacentTile in myData.adjacentTiles(index):
-    for id in adjacentTile:
-      allowed = allowed + id.getAllowedNeighbours()
-  allowed = allowed * myData.placementData[index]
-  if allowed == {}:
-    myData.nicePrint(index)
-    echo myData.placementData[index]
-    quit()
   while not canEntryHere:
-    entry = allowed.sample()
+    entry = myData.placementData[index].sample
     canEntryHere = myData.isValidPlacement(index, entry)
 
   for adjacentTile in myData.adjacentTiles(index):
@@ -126,8 +100,8 @@ proc generateWorld(): MyData =
   for x in result.placementData.mitems:
     x = fullIdSet
   result.setAllowedIds(0)
-  while not result.isDone:
-    result.setAllowedIds(rand(0..<WorldArea))
+  for ind in 1..<result.placementData.len:
+    result.setAllowedIds(ind)
 
 randomize()
 let data = generateWorld()
