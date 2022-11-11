@@ -2,7 +2,7 @@ import std/[macros, genasts, typetraits, enumerate]
 import micros
 
 proc genBracketBorrow(isMut: bool, borrowFor, statement: NimNode): NimNode =
-
+  let dBase = bindSym"distinctBase"
   result =
       if statement.kind == nnkAsgn:
         genast():
@@ -27,23 +27,30 @@ proc genBracketBorrow(isMut: bool, borrowFor, statement: NimNode): NimNode =
         statement
 
   for i, x in bracketExpr:
+    let
+      argName = x.skipAddrs
+      isSelf = argName.eqIdent"self" or argName.eqIdent"mSelf"
     var
       typ =
-        if x.eqIdent"self" or x.eqIdent"mSelf":
-          if x.symKind == nskVar:
+        if isSelf:
+          if argName.symKind == nskVar:
             nnkVarTy.newTree(borrowFor)
           else:
             borrowFor
         else:
           x.getType()
 
-    if x.eqIdent"mSelf" and typ.kind != nnkVarTy:
+    if argName.eqIdent"mSelf" and typ.kind != nnkVarTy:
       typ = nnkVarTy.newTree(typ)
 
     let
       name = ident("arg" & $i)
       theIdent = IdentDef(newIdentDefs(name, typ))
-    call.add name
+    call.add:
+      if isSelf:
+        newCall(dBase, name)
+      else:
+        name
     RoutineNode(result).addParam theIdent
     if statement.kind != nnkAsgn:
       var retT = getType(statement)
@@ -76,16 +83,20 @@ proc genCallBorrow(borrowFor: NimNode, isMut: bool, statement: NimNode): NimNode
       error("Somehow got an overloaded symbol", routine.NimNode)
     routineNode(result).returnType = routine.returnType
     for i, params in enumerate routine.params:
-      let
-        isSelf = statement[i + 1].skipAddrs.eqIdent"self"
-        params = IdentDef(NimNode(params).copyNimTree)
+      let params = IdentDef(NimNode(params).copyNimTree)
 
       for j, name in enumerate params.names:
+        let
+          argName = statement[j + 1 + i].skipAddrs
+          isSelf = argName.eqIdent"self" or argName.eqIdent"mSelf"
         proc paramType: NimNode =
-          if statement[j + 1 + i].skipAddrs.eqIdent"self":
+          if isSelf:
             borrowFor
           else:
-            statement[j + 1 + i].getType()
+            if statement[j + 1 + i].kind == nnkConv: # Conversions should be skipped for their type?
+              statement[j + 1 + i][0]
+            else:
+              statement[j + 1 + i].getType()
 
         var typ =
           case params.typ.kind
@@ -101,12 +112,11 @@ proc genCallBorrow(borrowFor: NimNode, isMut: bool, statement: NimNode): NimNode
               paramType()
           else:
             paramType()
-        if NimNode(name).eqIdent"mSelf" and typ.kind != nnkVarTy: # Allow us to do `mSelf` for overriding
+        if argName.eqIdent"mSelf" and typ.kind != nnkVarTy: # Allow us to do `mSelf` for overriding
           typ = nnkVarTy.newTree(typ)
         let theIdent = identDef(newIdentDefs(NimNode(name), typ))
         RoutineNode(result).addParam theIdent
 
-      for name in params.names:
         call.add:
           if isSelf:
             newCall(dBase, NimNode(name))
@@ -126,16 +136,15 @@ macro borrower(borrowFor: typed, isMut: static bool, statement: typed): untyped 
   let statement = statement[^1][^1]
   case statement.kind
   of nnkCall:
-    echo statement.treeRepr
     result = genCallBorrow(borrowFor, isMut, statement)
 
   of nnkAsgn:
     if statement[0].kind == nnkBracketExpr:
       result = genBracketBorrow(isMut, borrowFor, statement)
 
-
   of nnkBracketExpr:
     result = genBracketBorrow(isMut, borrowFor, statement)
+
   of nnkForStmt:
     result = genCallBorrow(borrowFor, isMut, statement[^2])
   else:
@@ -171,7 +180,6 @@ macro lendProcs*(borrowFor: typedesc[distinct], body: untyped): untyped =
             block:
               var mSelf {.inject.} = default(dBase(borrowFor))
               stmt
-
         when compiles(mSelfBorrow()):
           mSelfBorrow()
         else:
@@ -195,8 +203,10 @@ lendProcs(NotString):
   self.add("helllo")
   `$`(self)
   `[]`(self, 0)
+  `[]`(self, ^1)
   mut: `[]`(mSelf, 0)
   `[]=`(mSelf, 0, 'a')
+  `[]=`(mSelf, ^1, 'a')
   `==`(self, self)
 
   for _ in self.items(): discard
@@ -208,6 +218,13 @@ var notString = NotString("")
 notString.add "Hello"
 notString.add " World!"
 assert notString == NotString("Hello World!")
+notString[^1] = 'a'
+assert notString[^1] == 'a'
+notString[0] = 'b'
+assert notString[0] == 'b'
+assert "World" in notString
+assert 'b' in notString
+
 for ch in notString.mitems:
   ch = '0'
 
