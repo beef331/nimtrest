@@ -148,7 +148,8 @@ macro borrower(borrowFor: typed, isMut: static bool, statement: typed): untyped 
   of nnkForStmt:
     result = genCallBorrow(borrowFor, isMut, statement[^2])
   else:
-    discard
+    error("Do not know how to borrow", statement)
+
   desym(result)
   echo result.repr
 
@@ -163,19 +164,19 @@ macro lendProcs*(borrowFor: typedesc[distinct], body: untyped): untyped =
           (false, stmt)
     result.add:
       genast(stmt, borrowFor, borrow = bindSym"borrower", dBase = bindSym"distinctBase", isMut = newLit(isMut)):
-        template letBorrow() =
+        template letBorrow() {.gensym, used.} =
           borrow(borrowFor, isMut):
             block:
               let self {.inject.} = default(dBase(borrowFor))
               stmt
 
-        template varBorrow() =
+        template varBorrow() {.gensym, used.} =
           borrow(borrowFor, isMut):
             block:
               var self {.inject.} = default(dBase(borrowFor))
               stmt
 
-        template mSelfBorrow() =
+        template mSelfBorrow() {.gensym, used.} =
           borrow(borrowFor, isMut):
             block:
               var mSelf {.inject.} = default(dBase(borrowFor))
@@ -218,6 +219,7 @@ var notString = NotString("")
 notString.add "Hello"
 notString.add " World!"
 assert notString == NotString("Hello World!")
+assert $notString == "Hello World!"
 notString[^1] = 'a'
 assert notString[^1] == 'a'
 notString[0] = 'b'
