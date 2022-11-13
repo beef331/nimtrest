@@ -62,25 +62,32 @@ proc genBracketBorrow(isMut: bool, borrowFor, statement: NimNode): NimNode =
 
   result[^1] = call
 
-
-
-proc genCallBorrow(borrowFor: NimNode, isMut: bool, statement: NimNode): NimNode =
-  let
-    dBase = bindSym"distinctBase"
-    call = nnkCall.newTree(statement[0])
+proc genCallBorrow(borrowFor: NimNode, isMut, isExported: bool, statement: NimNode): NimNode =
+  let dBase = bindSym"distinctBase"
+  var call = nnkCall.newTree(statement[0])
+  let name = ident($statement[0])
   result =
-      case statement[0].symKind
-      of nskIterator:
-        genast(name = ident $statement[0]):
-          iterator name() = discard
+      if isExported:
+        case statement[0].symKind
+        of nskIterator:
+          genast(name):
+            iterator name*() = discard
+        else:
+          genast(name):
+            proc name*() {.inline.} = discard
       else:
-        genast(name = ident $statement[0]):
-          proc name() {.inline.} = discard
-
+        case statement[0].symKind
+        of nskIterator:
+          genast(name):
+            iterator name() = discard
+        else:
+          genast(name):
+            proc name() {.inline.} = discard
 
   for symCount, routine in enumerate routineSym(statement[0]).routines:
     if symCount > 0:
       error("Somehow got an overloaded symbol", routine.NimNode)
+
     routineNode(result).returnType = routine.returnType
     for i, params in enumerate routine.params:
       let params = IdentDef(NimNode(params).copyNimTree)
@@ -123,20 +130,25 @@ proc genCallBorrow(borrowFor: NimNode, isMut: bool, statement: NimNode): NimNode
           else:
             NimNode(name)
     if statement[0].symKind == nskIterator:
-      result[^1] = genast(call):
+      call = genast(call):
         for x in call:
           yield x
-    else:
-      result[^1] = call
+    call = newStmtList(call)
+    var added = 0
+    for node in NimNode(routine.body):
+      if node.kind == nnkCommentStmt:
+        call.insert(added, node.copyNimTree)
+        inc added
+    result[^1] = call
 
-macro borrower(borrowFor: typed, isMut: static bool, statement: typed): untyped =
+macro borrower(borrowFor: typed, isMut, isExported: static bool, statement: typed): untyped =
   ## `borrowFor` is the type used for replacements on `self` or `mSelf`
   ## `isMut` indicates whether the result is `mut` where it's ambiguous `[]` for instance.
   ## `statement` is the expression which will be lent from
   let statement = statement[^1][^1]
   case statement.kind
   of nnkCall:
-    result = genCallBorrow(borrowFor, isMut, statement)
+    result = genCallBorrow(borrowFor, isMut, isExported, statement)
 
   of nnkAsgn:
     if statement[0].kind == nnkBracketExpr:
@@ -146,12 +158,11 @@ macro borrower(borrowFor: typed, isMut: static bool, statement: typed): untyped 
     result = genBracketBorrow(isMut, borrowFor, statement)
 
   of nnkForStmt:
-    result = genCallBorrow(borrowFor, isMut, statement[^2])
+    result = genCallBorrow(borrowFor, isMut, isExported, statement[^2])
   else:
     error("Do not know how to borrow", statement)
 
   desym(result)
-  echo result.repr
 
 macro lendProcs*(borrowFor: typedesc[distinct], body: untyped): untyped =
   result = newStmtList()
@@ -163,33 +174,32 @@ macro lendProcs*(borrowFor: typedesc[distinct], body: untyped): untyped =
         else:
           (false, stmt)
     result.add:
-      genast(stmt, borrowFor, borrow = bindSym"borrower", dBase = bindSym"distinctBase", isMut = newLit(isMut)):
-        template letBorrow() {.gensym, used.} =
-          borrow(borrowFor, isMut):
+      genast(stmt, borrowFor, borrow = bindSym"borrower", dBase = bindSym"distinctBase", isMut = newLit(isMut), isExported = newLit(true)):
+        template letBorrow(doExport: static bool) {.gensym, used.} =
+          borrow(borrowFor, isMut, doExport):
             block:
               let self {.inject.} = default(dBase(borrowFor))
               stmt
 
-        template varBorrow() {.gensym, used.} =
-          borrow(borrowFor, isMut):
+        template varBorrow(doExport: static bool) {.gensym, used.} =
+          borrow(borrowFor, isMut, doExport):
             block:
               var self {.inject.} = default(dBase(borrowFor))
               stmt
 
-        template mSelfBorrow() {.gensym, used.} =
-          borrow(borrowFor, isMut):
+        template mSelfBorrow(doExport: static bool) {.gensym, used.} =
+          borrow(borrowFor, isMut, doExport):
             block:
               var mSelf {.inject.} = default(dBase(borrowFor))
               stmt
-        when compiles(mSelfBorrow()):
-          mSelfBorrow()
+
+        when compiles(mSelfBorrow(false)):
+          mSelfBorrow(isExported)
         else:
-          when compiles(letBorrow()):
-            letBorrow()
-
-          elif compiles(varBorrow()):
-            varBorrow()
-
+          when compiles(letBorrow(false)):
+            letBorrow(isExported)
+          elif compiles(varBorrow(false)):
+            varBorrow(isExported)
           else:
             {.error: "cannot borrow '" & astToStr(stmt) & "'.".}
 
@@ -202,6 +212,7 @@ lendProcs(NotString):
   self.contains('a')
   self.contains("")
   self.add("helllo")
+  self.add(self)
   `$`(self)
   `[]`(self, 0)
   `[]`(self, ^1)
@@ -231,3 +242,4 @@ for ch in notString.mitems:
   ch = '0'
 
 assert notString == NotString("000000000000")
+
