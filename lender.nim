@@ -164,44 +164,59 @@ macro borrower(borrowFor: typed, isMut, isExported: static bool, statement: type
 
   desym(result)
 
+proc unpackStmt*(stmt: NimNode): tuple[isMut, isExported: bool, stmt: NimNode] =
+  if stmt.kind == nnkPragmaBlock:
+    for x in stmt[0]:
+      if x.eqIdent"mut":
+        result[0] = true
+      elif x.eqIdent"exposed":
+        result[1] = true
+      else:
+        error("Unknown argument for `lendProcs`: '" & x.repr & "'.", x)
+    result[2] = stmt[^1]
+  else:
+    result = (false, false, stmt)
+
+proc genBorrowLogic(stmt, borrowFor: NimNode, isMut, isExported: bool): NimNode =
+  genast(stmt, borrowFor, borrow = bindSym"borrower", dBase = bindSym"distinctBase", isMut = newLit(isMut), isExported = newLit(isExported)):
+    template letBorrow(doExport: static bool) {.gensym, used.} =
+      borrow(borrowFor, isMut, doExport):
+        block:
+          let self {.inject.} = default(dBase(borrowFor))
+          stmt
+
+    template varBorrow(doExport: static bool) {.gensym, used.} =
+      borrow(borrowFor, isMut, doExport):
+        block:
+          var self {.inject.} = default(dBase(borrowFor))
+          stmt
+
+    template mSelfBorrow(doExport: static bool) {.gensym, used.} =
+      borrow(borrowFor, isMut, doExport):
+        block:
+          var mSelf {.inject.} = default(dBase(borrowFor))
+          stmt
+
+    when compiles(mSelfBorrow(false)):
+      mSelfBorrow(isExported)
+    else:
+      when compiles(letBorrow(false)):
+        letBorrow(isExported)
+      elif compiles(varBorrow(false)):
+        varBorrow(isExported)
+      else:
+        {.error: "cannot borrow '" & astToStr(stmt) & "'.".}
+
+
 macro lendProcs*(borrowFor: typedesc[distinct], body: untyped): untyped =
   result = newStmtList()
   for stmt in body:
-    let
-      (isMut, stmt) =
-        if stmt.kind == nnkCall and stmt[0].eqIdent"mut":
-          (true, stmt[1])
-        else:
-          (false, stmt)
-    result.add:
-      genast(stmt, borrowFor, borrow = bindSym"borrower", dBase = bindSym"distinctBase", isMut = newLit(isMut), isExported = newLit(true)):
-        template letBorrow(doExport: static bool) {.gensym, used.} =
-          borrow(borrowFor, isMut, doExport):
-            block:
-              let self {.inject.} = default(dBase(borrowFor))
-              stmt
-
-        template varBorrow(doExport: static bool) {.gensym, used.} =
-          borrow(borrowFor, isMut, doExport):
-            block:
-              var self {.inject.} = default(dBase(borrowFor))
-              stmt
-
-        template mSelfBorrow(doExport: static bool) {.gensym, used.} =
-          borrow(borrowFor, isMut, doExport):
-            block:
-              var mSelf {.inject.} = default(dBase(borrowFor))
-              stmt
-
-        when compiles(mSelfBorrow(false)):
-          mSelfBorrow(isExported)
-        else:
-          when compiles(letBorrow(false)):
-            letBorrow(isExported)
-          elif compiles(varBorrow(false)):
-            varBorrow(isExported)
-          else:
-            {.error: "cannot borrow '" & astToStr(stmt) & "'.".}
+    let (isMut, isExported, stmt) = stmt.unpackStmt()
+    if (isMut or isExported) and stmt.len > 1:
+      for child in stmt:
+        result.add genBorrowLogic(child, borrowFor, isMut, isExported)
+    else:
+      result.add genBorrowLogic(stmt, borrowFor, isMut, isExported)
 
 
 import std/strutils
@@ -209,21 +224,23 @@ import std/strutils
 type NotString = distinct string
 
 lendProcs(NotString):
-  self.contains('a')
-  self.contains("")
-  self.add("helllo")
-  self.add(self)
-  `$`(self)
-  `[]`(self, 0)
-  `[]`(self, ^1)
-  mut: `[]`(mSelf, 0)
-  `[]=`(mSelf, 0, 'a')
-  `[]=`(mSelf, ^1, 'a')
-  `==`(self, self)
+  {.exposed.}:
+    self.contains('a')
+    self.contains("")
+    self.add("helllo")
+    self.add(self)
+    `$`(self)
+    `[]`(self, 0)
+    `[]`(self, ^1)
+    `[]=`(mSelf, 0, 'a')
+    `[]=`(mSelf, ^1, 'a')
+    `==`(self, self)
 
-  for _ in self.items(): discard
-  for _ in self.mitems(): discard
-  for x, y in self.pairs(): discard
+    for _ in self.items(): discard
+    for _ in self.mitems(): discard
+    for x, y in self.pairs(): discard
+  {.mut, exposed.}: `[]`(mSelf, 0)
+
 
 
 var notString = NotString("")
