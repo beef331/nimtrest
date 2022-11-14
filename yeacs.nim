@@ -36,6 +36,8 @@ type
 
   Archetype*[T: ComponentTuple] = ref object of ArchetypeBase
 
+  World* = object
+    archetypes: seq[ArchetypeBase]
 
 proc makeArchetype*(tup: typedesc[ComponentTuple]): Archetype[tup] =
   const tupLen = tupleLen(tup)
@@ -92,7 +94,8 @@ proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
       result.add ", "
   result.add ")"
 
-proc filter*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]): seq[ArchetypeBase] =
+
+iterator filter*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]): ArchetypeBase =
   var def: tup
   const requiredCount = tupleLen(tup)
   for arch in archetypes:
@@ -109,12 +112,16 @@ proc filter*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]
 
 
       if found == requiredCount:
-        result.add arch
+        yield arch
+
+proc filter*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]): seq[ArchetypeBase] =
+  for x in filter(archeTypes, tup):
+    result.add x
 
 when isLowLevel:
   proc add*[T](arch: Archetype[T], tup: sink T) =
     for field in tup.fields:
-      const realSize = sizeof(field) - sizeof(pointer) # Dont need type information
+      const realSize = max(sizeof(field) - sizeof(pointer), 1) # Dont need type information, but need atleast 1 byte(ugh yes)
       let startLen = arch.data.len
       arch.data.setLen(arch.data.len + realSize)
       let fieldStart = cast[pointer](cast[int](field.addr) + sizeof(pointer))
@@ -165,9 +172,9 @@ iterator foreach*(arch: ArchetypeBase, tup: typedesc[ComponentTuple]): auto =
         if arch.types[i] == $typeof(field):
           ifMatches()
 
-  assert found == tupleLen(tup)
-  for i in 0..<arch.len:
-    yield arch.generateAccess(i, indices, def)
+  if found == tupleLen(tup):
+    for i in 0..<arch.len:
+      yield arch.generateAccess(i, indices, def)
 
 iterator foreach*(archs: openarray[ArchetypeBase], tup: typedesc[ComponentTuple], filtered: static bool = true): auto =
   when filtered:
@@ -179,6 +186,41 @@ iterator foreach*(archs: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]
       for ent in arch.foreach(tup):
         yield ent
 
+iterator foreach*(world: World, t: typedesc[ComponentTuple]): auto =
+  for arch in world.archetypes:
+    for ent in arch.foreach(t):
+      yield ent
+
+proc isApartOf*[T: ComponentTuple](entity: T, arch: ArchetypeBase): bool =
+  if tupleLen(T) == arch.typeCount:
+    for i, field in enumerate entity.fields:
+      when isLowLevel:
+        if arch.types[i] != field.getTypeInfo:
+          return false
+      else:
+        if arch.types[i] != $typeof(field):
+          return false
+    result = true
+
+proc getArch*(world: World, T: typedesc[ComponentTuple]): Archetype[T] =
+  let def = default(T)
+  for arch in world.archetypes:
+    if def.isApartOf(arch):
+      return Archetype[T](arch)
+
+
+proc addEntity*[T: ComponentTuple](world: var World, entity: sink T) =
+  const requiredCount = tupleLen(entity)
+  for arch in world.archetypes:
+    if entity.isApartOf(arch):
+      Archetype[T](arch).add entity
+      return # Added we can leave
+  let newArch = makeArchetype typeof(entity)
+  newArch.add entity
+  world.archetypes.add newArch
+
+
+
 when isMainModule:
   type
     Position = object of Component
@@ -186,33 +228,26 @@ when isMainModule:
     Health = object of Component
       current, max: int32
 
-  var
-    posHealth = makeArchetype((Position, Health))
-    pos = makeArchetype((Position,))
-    health = makeArchetype((Health,))
-
-  pos.add (Position(x: 100, y: 10, z: 10), )
-  posHealth.add (Position(x: 1, y: 10, z: 40), Health())
-  health.add (Health(current: 20, max: 300), )
+  var world = World()
+  world.addEntity (Position(x: 100, y: 10, z: 10), )
+  world.addEntity (Position(x: 1, y: 10, z: 40), Health())
+  world.addEntity (Health(current: 20, max: 300), )
 
 
-  var myArchs = [ArchetypeBase pos, posHealth, health]
-
-  for (pos,) in myArchs.foreach (Position,):
+  for (pos,) in world.foreach (Position,):
     pos.x = 300
     echo pos[]
 
-  for (health, pos) in myArchs.foreach (Health, Position):
+  for (health, pos) in world.foreach (Health, Position):
     pos.x = 300
     health.current = 100
     health.max = 130
 
 
-  for (health, pos) in posHealth.foreach (Health, Position):
+  for (health, pos) in world.foreach (Health, Position):
     assert pos[] == Position(x: 300, y: 10, z: 40)
     assert health[] == Health(current: 100, max: 130)
 
-  echo $pos
-  echo posHealth
-  echo health
-
+  echo world.getArch (Position, )
+  echo world.getArch (Position, Health)
+  echo world.getArch (Health, )
