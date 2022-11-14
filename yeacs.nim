@@ -1,6 +1,12 @@
 import std/[typetraits, macros, genasts, strformat, enumerate]
 
-type Component = object of RootObj
+const isLowLevel = not(defined(js) or defined(nimscript))
+
+type
+  Component* = object of RootObj
+  ComponentTuple* = concept ct, type CT
+    onlyUniqueValues(CT)
+    fromComponent(CT)
 
 proc onlyUniqueValues(t: typedesc[tuple]): bool =
   result = true
@@ -16,35 +22,53 @@ proc fromComponent(t: typedesc[tuple]): bool =
       return false
 
 type
-  ComponentTuple* = concept ct, type CT
-    onlyUniqueValues(CT)
-    fromComponent(CT)
   ArchetypeBase* = ref object of RootObj
     typeCount: int
-    types: seq[pointer]
-    componentOffset: seq[int]
-    stride: int
-    data: seq[byte]
+    when isLowLevel:
+      componentOffset: seq[int]
+      types: seq[pointer]
+      stride: int
+      data: seq[byte]
+    else:
+      types: seq[string]
+      data: seq[ref Component]
 
 
   Archetype*[T: ComponentTuple] = ref object of ArchetypeBase
 
+
 proc makeArchetype*(tup: typedesc[ComponentTuple]): Archetype[tup] =
   const tupLen = tupleLen(tup)
-  result = Archetype[tup](
-    typeCount: tupLen,
-    types: newSeqOfCap[pointer](tupLen),
-    componentOffset: newSeqOfCap[int](tupLen)
-  )
+  result =
+    when isLowLevel:
+      Archetype[tup](
+        typeCount: tupLen,
+        types: newSeqOfCap[pointer](tupLen),
+        componentOffset: newSeqOfCap[int](tupLen)
+      )
+    else:
+      Archetype[tup](
+        typeCount: tupLen,
+        types: newSeqOfCap[string](tupLen)
+      )
+
   let def = default(tup)
   var offset = 0
-  for field in def.fields:
-    result.types.add field.getTypeInfo()
-    result.componentOffset.add offset
-    offset.inc sizeof(field) - sizeof(pointer)
-  result.stride = offset
+  for i, field in enumerate def.fields:
+    when isLowLevel:
+      result.types.add field.getTypeInfo()
+      result.componentOffset.add offset
+      offset.inc sizeof(field) - sizeof(pointer)
+    else:
+      result.types.add $typeof(field)
+  when isLowLevel:
+    result.stride = offset
 
-proc len*(arch: ArchetypeBase): int = arch.data.len div arch.stride
+proc len*(arch: ArchetypeBase): int =
+  when isLowLevel:
+    arch.data.len div arch.stride
+  else:
+    arch.data.len div arch.typeCount
 
 proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
   const
@@ -54,15 +78,17 @@ proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
   let len = arch.len
   for i in 0..<len:
     let def = default T
-    var ind = 0
-    for field in def.fields:
-      let
-        startField = arch.data[i * arch.stride + arch.componentOffset[ind]].addr
-        data = cast[ptr typeof(field)](cast[int](startField) - sizeof(pointer))
-      result.add $data[]
-      if ind < tupLen - 1:
-        result.add ", "
-      inc ind
+    for ind, field in enumerate def.fields:
+      when isLowLevel:
+        let
+          startField = arch.data[i * arch.stride + arch.componentOffset[ind]].addr
+          data = cast[ptr typeof(field)](cast[int](startField) - sizeof(pointer))
+        copyMem(field.unsafeaddr, cast[pointer](cast[int](startField) - sizeof(pointer)), sizeof(field))
+        result.add $field
+      else:
+        result.add $(ref typeof(field))(arch.data[i])[]
+        if ind < tupLen - 1:
+          result.add ", "
     if i < len - 1:
       result.add ", "
   result.add ")"
@@ -75,27 +101,48 @@ proc filter*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]
       var found = 0
       for field in def.fields:
         for i in 0..<arch.typeCount:
-          if arch.types[i]  == field.getTypeInfo:
-            inc found
+          when isLowLevel:
+            if arch.types[i] == field.getTypeInfo:
+              inc found
+          else:
+            if arch.types[i] == $typeof(field):
+              inc found
+
 
       if found == requiredCount:
         result.add arch
 
-proc add*[T](arch: Archetype[T], tup: sink T) =
-  for field in tup.fields:
-    const realSize = sizeof(field) - sizeof(pointer) # Dont need type information
-    let startLen = arch.data.len
-    arch.data.setLen(arch.data.len + realSize)
-    let fieldStart = cast[pointer](cast[int](field.addr) + sizeof(pointer))
-    arch.data[startLen].addr.copyMem(fieldStart, realSize)
+when isLowLevel:
+  proc add*[T](arch: Archetype[T], tup: sink T) =
+    for field in tup.fields:
+      const realSize = sizeof(field) - sizeof(pointer) # Dont need type information
+      let startLen = arch.data.len
+      arch.data.setLen(arch.data.len + realSize)
+      let fieldStart = cast[pointer](cast[int](field.addr) + sizeof(pointer))
+      arch.data[startLen].addr.copyMem(fieldStart, realSize)
+else:
+  proc add*[T](arch: Archetype[T], tup: sink T) =
+    for field in tup.fields:
+      let newComp = new typeof(field)
+      newComp[] = field
+      arch.data.add newComp
 
-macro generateAccess(arch: ArchetypeBase, ind: int, indArray: array, tup: ComponentTuple): untyped =
-  result = nnkTupleConstr.newTree()
-  for i, val in tup.getTypeImpl:
-    result.add:
-      genast(val, ind, indArray, tup, i):
-        let element = arch.data[ind * arch.stride + arch.componentOffset[indArray[i]]].addr
-        cast[ptr val](cast[int](element) - sizeof(pointer))
+
+when isLowLevel:
+  macro generateAccess(arch: ArchetypeBase, ind: int, indArray: array, tup: ComponentTuple): untyped =
+    result = nnkTupleConstr.newTree()
+    for i, val in tup.getTypeImpl:
+      result.add:
+        genast(val, ind, indArray, tup, i):
+          let element = arch.data[ind * arch.stride + arch.componentOffset[indArray[i]]].addr
+          cast[ptr val](cast[int](element) - sizeof(pointer))
+else:
+  macro generateAccess(arch: ArchetypeBase, ind: int, indArray: array, tup: ComponentTuple): untyped =
+    result = nnkTupleConstr.newTree()
+    for i, val in tup.getTypeImpl:
+      result.add:
+        genast(val, ind, indArray, tup, i):
+          (ref typeof(tup[i]))(arch.data[indArray[i] + ind * arch.typeCount])
 
 iterator foreach*(arch: ArchetypeBase, tup: typedesc[ComponentTuple]): auto =
   var
@@ -106,14 +153,21 @@ iterator foreach*(arch: ArchetypeBase, tup: typedesc[ComponentTuple]): auto =
     if found >= indices.len:
       break
     for i in 0..<arch.typeCount:
-      if arch.types[i] == field.getTypeInfo():
+      template ifMatches() =
         indices[found] = i
         inc found
         if found >= indices.len:
           break
 
+      when isLowLevel:
+        if arch.types[i] == field.getTypeInfo():
+          ifMatches()
+      else:
+        if arch.types[i] == $typeof(field):
+          ifMatches()
+
   assert found == tupleLen(tup)
-  for i in 0 ..< arch.len:
+  for i in 0..<arch.len:
     yield arch.generateAccess(i, indices, def)
 
 iterator foreach*(archs: openarray[ArchetypeBase], tup: typedesc[ComponentTuple], filtered: static bool = true): auto =
@@ -140,6 +194,7 @@ when isMainModule:
 
   pos.add (Position(x: 100, y: 10, z: 10), )
   posHealth.add (Position(x: 1, y: 10, z: 40), Health())
+  health.add (Health(current: 20, max: 300), )
 
   var myArchs = [ArchetypeBase pos, posHealth, health]
 
@@ -152,6 +207,7 @@ when isMainModule:
     health.current = 100
     health.max = 130
 
+
   for (health, pos) in posHealth.foreach (Health, Position):
     assert pos[] == Position(x: 300, y: 10, z: 40)
     assert health[] == Health(current: 100, max: 130)
@@ -159,3 +215,4 @@ when isMainModule:
   echo $pos
   echo posHealth
   echo health
+
