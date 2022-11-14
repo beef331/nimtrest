@@ -59,10 +59,9 @@ proc makeArchetype*(tup: typedesc[ComponentTuple]): Archetype[tup] =
       result.types.add field.getTypeInfo()
       result.componentOffset.add offset
       offset.inc sizeof(field) - sizeof(pointer)
+      result.stride = offset
     else:
       result.types.add $typeof(field)
-  when isLowLevel:
-    result.stride = offset
 
 proc len*(arch: ArchetypeBase): int =
   when isLowLevel:
@@ -86,9 +85,9 @@ proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
         copyMem(field.unsafeaddr, cast[pointer](cast[int](startField) - sizeof(pointer)), sizeof(field))
         result.add $field
       else:
-        result.add $(ref typeof(field))(arch.data[i])[]
-        if ind < tupLen - 1:
-          result.add ", "
+        result.add $(ref typeof(field))(arch.data[i + ind])[]
+      if ind < tupLen - 1:
+        result.add ", "
     if i < len - 1:
       result.add ", "
   result.add ")"
@@ -195,6 +194,7 @@ when isMainModule:
   pos.add (Position(x: 100, y: 10, z: 10), )
   posHealth.add (Position(x: 1, y: 10, z: 40), Health())
   health.add (Health(current: 20, max: 300), )
+
 
   var myArchs = [ArchetypeBase pos, posHealth, health]
 
