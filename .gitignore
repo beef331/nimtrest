@@ -4,3 +4,4 @@
 nimcache/
 nimblecache/
 htmldocs/
+*.txt

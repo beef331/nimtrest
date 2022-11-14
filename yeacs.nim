@@ -16,19 +16,20 @@ proc fromComponent(t: typedesc[tuple]): bool =
       return false
 
 type
-  ArchetypeBase = ref object of RootObj
+  ComponentTuple* = concept ct, type CT
+    onlyUniqueValues(CT)
+    fromComponent(CT)
+  ArchetypeBase* = ref object of RootObj
     typeCount: int
     types: seq[pointer]
     componentOffset: seq[int]
     stride: int
     data: seq[byte]
-  ComponentTuple = concept ct, type CT
-    onlyUniqueValues(CT)
-    fromComponent(CT)
 
-  Archetype[T: ComponentTuple] = ref object of ArchetypeBase
 
-proc makeArchetype(tup: typedesc[ComponentTuple]): Archetype[tup] =
+  Archetype*[T: ComponentTuple] = ref object of ArchetypeBase
+
+proc makeArchetype*(tup: typedesc[ComponentTuple]): Archetype[tup] =
   const tupLen = tupleLen(tup)
   result = Archetype[tup](
     typeCount: tupLen,
@@ -45,7 +46,7 @@ proc makeArchetype(tup: typedesc[ComponentTuple]): Archetype[tup] =
 
 proc len*(arch: ArchetypeBase): int = arch.data.len div arch.stride
 
-proc `$`[T: ComponentTuple](arch: Archetype[T]): string =
+proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
   const
     typStr = $T
     tupLen = tupleLen(T)
@@ -66,7 +67,7 @@ proc `$`[T: ComponentTuple](arch: Archetype[T]): string =
       result.add ", "
   result.add ")"
 
-proc filter(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]): seq[ArchetypeBase] =
+proc filter*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]): seq[ArchetypeBase] =
   var def: tup
   const requiredCount = tupleLen(tup)
   for arch in archetypes:
