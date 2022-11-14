@@ -8,14 +8,14 @@ type
     onlyUniqueValues(CT)
     fromComponent(CT)
 
-proc onlyUniqueValues(t: typedesc[tuple]): bool =
+proc onlyUniqueValues*(t: typedesc[tuple]): bool =
   result = true
   for nameA, fieldA in default(t).fieldPairs:
     for nameB, fieldB in default(t).fieldPairs:
       when nameA != nameB and fieldA is typeof(fieldB):
         return false
 
-proc fromComponent(t: typedesc[tuple]): bool =
+proc fromComponent*(t: typedesc[tuple]): bool =
   result = true
   for x in default(t).fields:
     if x isnot Component:
