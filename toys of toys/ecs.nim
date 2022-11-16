@@ -79,19 +79,23 @@ proc draw() =
   drawBall(world)
 
 proc newBall(r, x, y, dx, dy, ddx, ddy: float; bounce, gravity, drag = false, coeff = 1.0) =
-  if bounce and not (gravity or drag):
-    world.addEntity (Size(r: r), Position(x: x, y: y), Velocity(dx: dx, dy: dy), Bounce(), Draw())
-  elif gravity and not drag:
-    world.addEntity (Size(r: r), Position(x: x, y: y), Velocity(dx: dx, dy: dy), Bounce(), Gravity(ddx: ddx, ddy: ddy), Draw())
-  elif drag:
-    world.addEntity (Size(r: r), Position(x: x, y: y), Velocity(dx: dx, dy: dy), Bounce(), Gravity(ddx: ddx, ddy: ddy), Drag(coefficient: coeff), Draw())
-  else:
-    world.addEntity (Size(r: r), Position(x: x, y: y), Velocity(dx: dx, dy: dy), Draw())
+  var ent = world.addEntity (Size(r: r), Position(x: x, y: y), Velocity(dx: dx, dy: dy), Draw())
+  if bounce:
+    world.addComponent(ent, Bounce())
+  if gravity:
+    world.addComponent(ent,  Gravity(ddx: ddx, ddy: ddy))
+  if drag:
+    world.addComponent(ent,  Drag(coefficient: coeff))
+
+
 
 newBall(15.0, 50.0, 180.0, -2.0, 1.0, 0.0, 0.0, true, false)
-newBall(10.0, 10.0, height - 60, 4.0, 0.0, 0.0, -1.0, true, true)
+newBall(10.0, 10.0, 0, 4.0, 0.0, 0.0, -1.0, true, true)
 newBall(7.0, 180.0, 180.0, 5.0, 2.0, 0.3, 0.5, true, true)
 newBall(20.0, 240.0, 40.0, -15.0, 0.0, 0.0, 0.5, true, true, true, 0.99)
+
+for arch in world.archetypes:
+  echo arch.len
 
 
 run(int width, int height, draw, name = "ecs")
