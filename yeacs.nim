@@ -49,8 +49,8 @@ type
     archIndex, entIndex: int
     generation: int # Used to ensure we do not have an outdated pointer
 
-template realCompSize*[T: Component](_: T): int = max(sizeof(T) - sizeof(pointer), 1)
-template componentAddr*[T: Component](t: T): pointer = cast[pointer](cast[uint](t.unsafeAddr) + uint sizeof(pointer))
+template realCompSize*[T: Component](_: T): int = max(sizeof(T) - sizeof(pointer), 1) # We do not need type information so this is used to remove it from size
+template componentAddr*[T: Component](t: T): pointer = cast[pointer](cast[uint](t.unsafeAddr) + uint sizeof(pointer)) # We do not need type information, this gets the pointer address
 
 
 proc makeArchetype*(tup: typedesc[ComponentTuple]): Archetype[tup] =
@@ -155,7 +155,7 @@ iterator filter*(archetypes: openarray[ArchetypeBase], typeInfo: openarray[TypeI
           for y in arch.types:
             if x == y:
               inc found
-              break searchForTyp
+              break searchForTyp # We found the type break out to reduce iterations
 
       if found == typeInfo.len:
         yield (i, arch)
@@ -189,7 +189,7 @@ when isLowLevel:
     var moved = 0
     for i, typA in toArch.types:
       for j, typB in fromArch.types:
-        if typA == typB:
+        if typA == typB: # found a type we had that we need to copy over
           let
             compSize =
               if j == fromArch.typeCount - 1:
@@ -204,17 +204,18 @@ when isLowLevel:
           break
 
       if moved == fromArch.typeCount:
-        break
+        break # Object fully moved we can exit
+
     assert moved == fromArch.typeCount
 
-    inc fromArch.generation
+    inc fromArch.generation # This invalidates any old Entity's, not the smartest but provents errors
 
     if entityId == fromArch.len - 1:
       fromArch.data.setLen(max(fromArch.data.len - fromArch.stride, 0))
     else:
-      if fromIndex > 0 and fromArch.data.len - fromArch.stride > 0:
+      if fromIndex > 0 and fromArch.data.len - fromArch.stride > 0: # We need to remove the components of the entity from the buffer, `copyMem` might overwrite the current buffer?
         let buffer = newSeq[byte](fromArch.data.len - fromArch.stride)
-        moveMem(buffer[0].unsafeAddr, fromArch.data[0].unsafeaddr, fromIndex)
+        moveMem(buffer[0].unsafeAddr, fromArch.data[0].unsafeaddr, fromIndex) # copy from 0..movingEntity
         moveMem(buffer[fromIndex].unsafeAddr, fromArch.data[fromIndex + fromArch.stride].unsafeaddr, fromArch.data.high - fromIndex - fromArch.stride)
         fromArch.data = buffer
       else:
@@ -353,11 +354,12 @@ proc addComponent*[T: Component](world: var World, entity: var Entity, component
   var
     arch: ArchetypeBase
     ind = 0
+
   for i, filteredArch in world.archetypes.filter(neededComponents):
     arch = filteredArch
     ind = i
 
-  if arch.isNil:
+  if arch.isNil: # We dont have an arch that fits the type we need, make one
     arch = makeArchetype(neededComponents, world.archeTypes[entity.archIndex], component)
     ind = world.archetypes.len
 
@@ -367,7 +369,7 @@ proc addComponent*[T: Component](world: var World, entity: var Entity, component
 
   for i, typ in arch.types: # We need to find where we have to copy this new component
     if thisCompTypeInfo == typ:
-      when isLowLevel:
+      when isLowLevel: # We need to copy the new component over to the type, the others moved above
         copyMem(arch.data[entity.entIndex * arch.stride + arch.componentOffset[i]].addr, componentAddr(component), realCompSize(component))
       else:
         let newComp = new typeof(Component)
