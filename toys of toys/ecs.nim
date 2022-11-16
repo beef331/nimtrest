@@ -30,14 +30,14 @@ type
   Draw = object of Component
 
 proc moveSystem(world: var World) =
-  for (pos, vel) in world.foreach (Position, Velocity):
+  for (pos, vel, size) in world.foreach (Position, Velocity, Size):
     let oldPosition = pos
 
     pos.y += vel.dy
     pos.x += vel.dx
 
-    pos.x = clamp(pos.x, 0, width)
-    pos.y = clamp(pos.y, 0, height)
+    pos.x = clamp(pos.x, size.r, width - size.r)
+    pos.y = clamp(pos.y, size.r, height - size.r)
 
     when defined(debugMove):
       debugEcho "Moved " & ecs.inspect(entity) & " from ", oldPosition, " to ", po
@@ -81,21 +81,26 @@ proc draw() =
   moveSystem(world)
   drawBall(world)
 
-proc newBall(r, x, y, dx, dy, ddx, ddy: float; bounce, gravity, drag = false, coeff = 1.0) =
+proc newBall(r, x, y, dx, dy: float; bounce: bool, ddx, ddy = 0d; coeff = 1.0) =
   var ent = world.addEntity (Size(r: r), Position(x: x, y: y), Velocity(dx: dx, dy: dy), Draw())
+  echo "Add entity"
   if bounce:
+    echo "Add Bounce"
     world.addComponent(ent, Bounce())
-  if gravity:
+  if ddx != 0 or ddy != 0:
+    echo "Add Gravity"
     world.addComponent(ent,  Gravity(ddx: ddx, ddy: -ddy))
-  if drag:
+
+  if coeff < 1:
+    echo "Add Drag"
     world.addComponent(ent,  Drag(coefficient: coeff))
 
 
 
-newBall(15.0, width / 2, height / 2, 1, 0.4, 0.3, 0.5, true, true)
-newBall(10.0, 20, 0, 4.0, 0.0, 0.0, 1.0, true, true)
-newBall(7.0, 180.0, 180.0, 5.0, 2.0, 0.3, 0.5, true, true)
-newBall(20.0, 240.0, 40.0, -15.0, 0.0, 0.0, 0.5, true, true, true, 0.99)
-newBall(15.0, 50.0, 180.0, -2.0, 1.0, 0.0, 0.0, true, true)
+newBall(15.0, width / 2, height / 2, 1, 0.4, false, 0.3, 0.5)
+newBall(10.0, 20, 0, 4.0, 0.0, false, 0, 1)
+newBall(7.0, 180.0, 180.0, 5.0, 2.0, true, 0.3, 0.5)
+newBall(20.0, 240.0, 40.0, 15.0, 0.0, true, 0.0, -10, 0.99)
+newBall(15.0, 50.0, 180.0, -2.0, 1.0, true, 0.0, -10)
 
 run(int width, int height, draw, name = "ecs")

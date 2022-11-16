@@ -50,6 +50,7 @@ type
     generation: int # Used to ensure we do not have an outdated pointer
 
 template realCompSize*[T: Component](_: T): int = max(sizeof(T) - sizeof(pointer), 1)
+template componentAddr*[T: Component](t: T): pointer = cast[pointer](cast[uint](t.unsafeAddr) + uint sizeof(pointer))
 
 
 proc makeArchetype*(tup: typedesc[ComponentTuple]): Archetype[tup] =
@@ -86,7 +87,7 @@ proc makeArchetype[T: Component](typeInfo: sink seq[TypeInfo], previous: Archety
         typeCount: typeInfo.len,
         types: typeInfo,
         componentOffset: previous.componentOffset,
-        stride: previous.stride + realCompSize(newType)
+        stride: previous.stride + previous.stride - previous.componentOffset[^1] + realCompSize(newType)
       )
     else:
       ArchetypeBase(
@@ -150,9 +151,11 @@ iterator filter*(archetypes: openarray[ArchetypeBase], typeInfo: openarray[TypeI
     if arch.typeCount == typeInfo.len:
       var found = 0
       for x in typeInfo:
-        for y in arch.types:
-          if x == y:
-            inc found
+        block searchForTyp:
+          for y in arch.types:
+            if x == y:
+              inc found
+              break searchForTyp
 
       if found == typeInfo.len:
         yield (i, arch)
@@ -164,11 +167,11 @@ proc filter*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]
 when isLowLevel:
   proc add*[T](arch: Archetype[T], tup: sink T) =
     for field in tup.fields:
-      const realSize =  realCompSize(field)# Dont need type information, but need atleast 1 byte(ugh yes)
+      const realSize = realCompSize(field) # Dont need type information, but need atleast 1 byte(ugh yes)
       let startLen = arch.data.len
       arch.data.setLen(arch.data.len + realSize)
-      let fieldStart = cast[pointer](cast[int](field.addr) + sizeof(pointer))
-      arch.data[startLen].addr.copyMem(fieldStart, realSize)
+      assert realSize == max(sizeof(field) - sizeof(pointer), 1)
+      arch.data[startLen].addr.copyMem(componentAddr(field), realSize)
 else:
   proc add*[T](arch: Archetype[T], tup: sink T) =
     for field in tup.fields:
@@ -185,34 +188,38 @@ when isLowLevel:
     let fromIndex = entityId * fromArch.stride
     var moved = 0
     for i, typA in toArch.types:
-      block addTyp:
-        for j, typB in fromArch.types:
-          if typA == typB:
-            let
-              compSize =
-                if j == fromArch.typeCount - 1:
-                  fromArch.stride - fromArch.componentOffset[j]
-                else:
-                  fromArch.componentOffset[j + 1] - fromArch.componentOffset[j]
-              fromOffset = fromArch.componentOffset[j]
-              toOffset = toArch.componentOffset[i]
-            if fromArch.len > 0:
-              copyMem(toArch.data[toOffset + toIndex].addr, fromArch.data[fromOffset + fromIndex].addr, compSize)
-            inc moved
-            break addTyp
+      for j, typB in fromArch.types:
+        if typA == typB:
+          let
+            compSize =
+              if j == fromArch.typeCount - 1:
+                fromArch.stride - fromArch.componentOffset[j]
+              else:
+                fromArch.componentOffset[j + 1] - fromArch.componentOffset[j]
+            fromOffset = fromArch.componentOffset[j]
+            toOffset = toArch.componentOffset[i]
+
+          moveMem(toArch.data[toOffset + toIndex].addr, fromArch.data[fromOffset + fromIndex].addr, compSize)
+          inc moved
+          break
+
+      if moved == fromArch.typeCount:
+        break
     assert moved == fromArch.typeCount
 
     inc fromArch.generation
+
     if entityId == fromArch.len - 1:
       fromArch.data.setLen(max(fromArch.data.len - fromArch.stride, 0))
     else:
       if fromIndex > 0 and fromArch.data.len - fromArch.stride > 0:
         let buffer = newSeq[byte](fromArch.data.len - fromArch.stride)
-        copyMem(buffer[0].unsafeAddr, fromArch.data[0].unsafeaddr, fromIndex)
-        copyMem(buffer[fromIndex].unsafeAddr, fromArch.data[fromIndex + fromArch.stride].unsafeaddr, fromArch.len - 1 - fromIndex - fromArch.stride)
+        moveMem(buffer[0].unsafeAddr, fromArch.data[0].unsafeaddr, fromIndex)
+        moveMem(buffer[fromIndex].unsafeAddr, fromArch.data[fromIndex + fromArch.stride].unsafeaddr, fromArch.data.high - fromIndex - fromArch.stride)
         fromArch.data = buffer
       else:
-        fromArch.data.setLen(0)
+        ##fromArch.data.setLen(0)
+
 else:
   proc moveEntity(fromArch, toArch: ArchetypeBase, entityId: int) =
     # Need to copy fromArch to toArch then shrink fromArch
@@ -330,8 +337,9 @@ proc addEntity*[T: ComponentTuple](world: var World, entity: sink T): Entity {.d
 
 
 proc addComponent*[T: Component](world: var World, entity: var Entity, component: T) =
-  ##assert entity.generation == world.archetypes[entity.archIndex].generation
-  let
+  assert entity.generation == world.archetypes[entity.archIndex].generation
+
+  var
     thisCompTypeInfo =
       when isLowLevel:
         component.getTypeInfo()
@@ -344,23 +352,23 @@ proc addComponent*[T: Component](world: var World, entity: var Entity, component
 
   var
     arch: ArchetypeBase
-    ind = -1
+    ind = 0
   for i, filteredArch in world.archetypes.filter(neededComponents):
     arch = filteredArch
     ind = i
 
   if arch.isNil:
     arch = makeArchetype(neededComponents, world.archeTypes[entity.archIndex], component)
-    inc ind
+    ind = world.archetypes.len
+
 
   world.archetypes[entity.archIndex].moveEntity(arch, entity.entIndex)
   entity = Entity(archIndex: ind, entIndex: arch.len - 1, generation: arch.generation)
-  let typInfo = neededComponents[^1]
+
   for i, typ in arch.types: # We need to find where we have to copy this new component
-    if typInfo == typ:
+    if thisCompTypeInfo == typ:
       when isLowLevel:
-        let realSize = realCompSize(component)
-        copyMem(arch.data[entity.entIndex + arch.componentOffset[i]].addr, component.unsafeAddr, realSize)
+        copyMem(arch.data[entity.entIndex * arch.stride + arch.componentOffset[i]].addr, componentAddr(component), realCompSize(component))
       else:
         let newComp = new typeof(Component)
         newComp[] = component
