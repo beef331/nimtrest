@@ -1,6 +1,6 @@
 import std/[typetraits, macros, genasts, strformat, enumerate]
 
-const isLowLevel = not(defined(js) or defined(nimscript))
+const isLowLevel = not(defined(js) or defined(nimscript) or defined(useOOP))
 
 type
   Component* = object of RootObj
@@ -28,7 +28,6 @@ else:
 
 type
   ArchetypeBase* = ref object of RootObj
-    typeCount: int
     generation: int
     when isLowLevel:
       componentOffset: seq[int]
@@ -50,21 +49,26 @@ type
     generation: int # Used to ensure we do not have an outdated pointer
 
 template realCompSize*[T: Component](_: T): int = max(sizeof(T) - sizeof(pointer), 1) # We do not need type information so this is used to remove it from size
-template componentAddr*[T: Component](t: T): pointer = cast[pointer](cast[uint](t.unsafeAddr) + uint sizeof(pointer)) # We do not need type information, this gets the pointer address
+template componentAddr*[T: Component](t: T): pointer =
+  var thePtr: pointer
+  for field in t.fields:
+    thePtr = field.unsafeaddr
+    break
+  thePtr
 
+
+proc typeCount*(archetype: ArchetypeBase): int = archeType.types.len
 
 proc makeArchetype*(tup: typedesc[ComponentTuple]): Archetype[tup] =
   const tupLen = tupleLen(tup)
   result =
     when isLowLevel:
       Archetype[tup](
-        typeCount: tupLen,
         types: newSeqOfCap[pointer](tupLen),
         componentOffset: newSeqOfCap[int](tupLen)
       )
     else:
       Archetype[tup](
-        typeCount: tupLen,
         types: newSeqOfCap[string](tupLen)
       )
 
@@ -84,18 +88,17 @@ proc makeArchetype[T: Component](typeInfo: sink seq[TypeInfo], previous: Archety
   result =
     when isLowLevel:
       ArchetypeBase(
-        typeCount: typeInfo.len,
         types: typeInfo,
         componentOffset: previous.componentOffset,
-        stride: previous.stride + previous.stride - previous.componentOffset[^1] + realCompSize(newType)
+        stride: previous.stride + realCompSize(newType)
       )
     else:
       ArchetypeBase(
-        typeCount: typeInfo.len,
         types: typeInfo
       )
   when isLowLevel:
-    result.componentOffset.add realCompSize(newType) + result.componentOffset[^1]
+    result.componentOffset.add  previous.stride
+    echo result[]
 
 proc len*(arch: ArchetypeBase): int =
   when isLowLevel:
@@ -166,12 +169,17 @@ proc filter*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]
 
 when isLowLevel:
   proc add*[T](arch: Archetype[T], tup: sink T) =
+    let startSize = arch.data.len
+    arch.data.setLen(arch.data.len + sizeof(tup)) # grow it a tinge
+    arch.data.setLen(startSize)
     for field in tup.fields:
       const realSize = realCompSize(field) # Dont need type information, but need atleast 1 byte(ugh yes)
       let startLen = arch.data.len
       arch.data.setLen(arch.data.len + realSize)
       assert realSize == max(sizeof(field) - sizeof(pointer), 1)
-      arch.data[startLen].addr.copyMem(componentAddr(field), realSize)
+      let compAddr = componentAddr(field)
+      if compAddr != nil:
+        arch.data[startLen].addr.copyMem(componentAddr(field), realSize)
 else:
   proc add*[T](arch: Archetype[T], tup: sink T) =
     for field in tup.fields:
@@ -192,34 +200,34 @@ when isLowLevel:
         if typA == typB: # found a type we had that we need to copy over
           let
             compSize =
-              if j == fromArch.typeCount - 1:
+              if j == fromArch.types.high:
                 fromArch.stride - fromArch.componentOffset[j]
               else:
                 fromArch.componentOffset[j + 1] - fromArch.componentOffset[j]
-            fromOffset = fromArch.componentOffset[j]
-            toOffset = toArch.componentOffset[i]
+            srcIndex = fromArch.componentOffset[j] + fromIndex
+            destIndex = toArch.componentOffset[i] + toIndex
 
-          moveMem(toArch.data[toOffset + toIndex].addr, fromArch.data[fromOffset + fromIndex].addr, compSize)
+          moveMem(toArch.data[destIndex].addr, fromArch.data[srcIndex].addr, compSize)
           inc moved
           break
 
       if moved == fromArch.typeCount:
-        break # Object fully moved we can exit
+        break # Object fully moved we can exit the loop
 
     assert moved == fromArch.typeCount
 
     inc fromArch.generation # This invalidates any old Entity's, not the smartest but provents errors
 
-    if entityId == fromArch.len - 1:
-      fromArch.data.setLen(max(fromArch.data.len - fromArch.stride, 0))
-    else:
-      if fromIndex > 0 and fromArch.data.len - fromArch.stride > 0: # We need to remove the components of the entity from the buffer, `copyMem` might overwrite the current buffer?
-        let buffer = newSeq[byte](fromArch.data.len - fromArch.stride)
-        moveMem(buffer[0].unsafeAddr, fromArch.data[0].unsafeaddr, fromIndex) # copy from 0..movingEntity
-        moveMem(buffer[fromIndex].unsafeAddr, fromArch.data[fromIndex + fromArch.stride].unsafeaddr, fromArch.data.high - fromIndex - fromArch.stride)
-        fromArch.data = buffer
-      else:
-        ##fromArch.data.setLen(0)
+
+    let newSize = fromArch.data.len - fromArch.stride
+
+    # This logic handles moving data around the old buffer
+    if fromIndex > 0:
+      if entityId != fromArch.len - 1:
+        moveMem(fromArch.data[fromIndex].unsafeAddr, fromArch.data[fromIndex + fromArch.stride].unsafeaddr, fromArch.data.len - fromIndex - fromArch.stride)
+    elif fromArch.len > 1:
+      moveMem(fromArch.data[0].unsafeAddr, fromArch.data[fromArch.stride].unsafeaddr, newSize) # copy from 0..movingEntity
+    fromArch.data.setLen(newSize)
 
 else:
   proc moveEntity(fromArch, toArch: ArchetypeBase, entityId: int) =
@@ -256,8 +264,11 @@ when isLowLevel:
     for i, val in tup.getTypeImpl:
       result.add:
         genast(val, ind, indArray, tup, i):
-          let element = arch.data[ind * arch.stride + arch.componentOffset[indArray[i]]].addr
-          cast[ptr val](cast[int](element) - sizeof(pointer))
+          when sizeof(val) - sizeof(pointer) == 0:
+            (ptr val)(nil)
+          else:
+            let element = arch.data[ind * arch.stride + arch.componentOffset[indArray[i]]].addr
+            cast[ptr val](cast[int](element) - sizeof(pointer))
 else:
   macro generateAccess(arch: ArchetypeBase, ind: int, indArray: array, tup: ComponentTuple): untyped =
     result = nnkTupleConstr.newTree()
@@ -346,10 +357,8 @@ proc addComponent*[T: Component](world: var World, entity: var Entity, component
         component.getTypeInfo()
       else:
         $typeof(component)
-    neededComponents = block:
-      var tmp = world.archetypes[entity.archIndex].types
-      tmp.add thisCompTypeInfo
-      tmp
+    neededComponents = world.archetypes[entity.archIndex].types
+  neededComponents.add thisCompTypeInfo
 
   var
     arch: ArchetypeBase
@@ -369,15 +378,17 @@ proc addComponent*[T: Component](world: var World, entity: var Entity, component
 
   for i, typ in arch.types: # We need to find where we have to copy this new component
     if thisCompTypeInfo == typ:
-      when isLowLevel: # We need to copy the new component over to the type, the others moved above
-        copyMem(arch.data[entity.entIndex * arch.stride + arch.componentOffset[i]].addr, componentAddr(component), realCompSize(component))
+      when isLowLevel: # We need to copy the new component over to the type, the others already moved in `moveEntity`
+        let compAddr = componentAddr(component)
+        if compAddr != nil: # Fieldless objects are 1 bytes
+          copyMem(arch.data[entity.entIndex * arch.stride + arch.componentOffset[i]].addr, compAddr, realCompSize(component))
+
       else:
         let newComp = new typeof(Component)
         newComp[] = component
         arch.data[entity.entIndex + i] = newComp
       break
   world.archetypes.add arch
-
 
 when isMainModule:
   type
@@ -390,6 +401,8 @@ when isMainModule:
   world.addEntity (Position(x: 100, y: 10, z: 10), )
   world.addEntity (Position(x: 1, y: 10, z: 40), Health())
   world.addEntity (Health(current: 20, max: 300), )
+  var myent = world.addEntity (Position(x: 1, y: 10, z: 40), )
+  world.addComponent(myEnt, Health())
 
 
   for (pos,) in world.foreach (Position,):
