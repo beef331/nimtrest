@@ -98,10 +98,10 @@ proc newBall(r, x, y, dx, dy: float; bounce: bool, ddx, ddy = 0d; coeff = 1.0) =
 
 
 
-#newBall(15.0, width / 2, height / 2, 1, 0.4, false, 0.3, 0.5)
-#newBall(10.0, 20, 0, 4.0, 0.0, true, 0, 1)
-#newBall(7.0, 180.0, 180.0, 5.0, 2.0, true, 0.3, 0.5)
-newBall(20.0, 240.0, 40.0, 15.0, 0.0, true, 0.0, -1, 0.99)
+newBall(15.0, width / 2, height / 2, 1, 0.4, false, 0.3, 0.5)
+newBall(10.0, 20, 0, 4.0, 0.0, true, 0, 1)
+newBall(7.0, 180.0, 180.0, 5.0, 2.0, true, 0.3, 0.5)
+newBall(20.0, 240.0, 40.0, 15.0, 0.0, true, 0.0, -1)
 newBall(15.0, 50.0, 180.0, -2.0, 1.0, true, 0.0, -1)
 
 run(int width, int height, draw, name = "ecs")

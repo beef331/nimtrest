@@ -264,11 +264,8 @@ when isLowLevel:
     for i, val in tup.getTypeImpl:
       result.add:
         genast(val, ind, indArray, tup, i):
-          when sizeof(val) - sizeof(pointer) == 0:
-            (ptr val)(nil)
-          else:
-            let element = arch.data[ind * arch.stride + arch.componentOffset[indArray[i]]].addr
-            cast[ptr val](cast[int](element) - sizeof(pointer))
+          let element = arch.data[ind * arch.stride + arch.componentOffset[indArray[i]]].addr
+          cast[ptr val](cast[int](element) - sizeof(pointer))
 else:
   macro generateAccess(arch: ArchetypeBase, ind: int, indArray: array, tup: ComponentTuple): untyped =
     result = nnkTupleConstr.newTree()
@@ -363,9 +360,11 @@ proc addComponent*[T: Component](world: var World, entity: var Entity, component
   var
     arch: ArchetypeBase
     ind = 0
+    madeNewArch = false
 
   for i, filteredArch in world.archetypes.filter(neededComponents):
     arch = filteredArch
+    madeNewArch = true
     ind = i
 
   if arch.isNil: # We dont have an arch that fits the type we need, make one
@@ -388,7 +387,8 @@ proc addComponent*[T: Component](world: var World, entity: var Entity, component
         newComp[] = component
         arch.data[entity.entIndex + i] = newComp
       break
-  world.archetypes.add arch
+  if not madeNewArch:
+    world.archetypes.add arch
 
 when isMainModule:
   type
