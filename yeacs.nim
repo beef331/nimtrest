@@ -233,29 +233,33 @@ else:
   proc moveEntity(fromArch, toArch: ArchetypeBase, entityId: int) =
     # Need to copy fromArch to toArch then shrink fromArch
     # This is tricky cause component order matters
-    let toIndex = toArch.len
-    toArch.data.setLen(toArch.len + toArch.typeCount)
+    let toIndex = toArch.data.len
+    toArch.data.setLen(toIndex + toArch.typeCount)
     let fromIndex = entityId * fromArch.typeCount
+
     var moved = 0
     for i, typA in toArch.types:
       block addTyp:
         for j, typB in fromArch.types:
           if typA == typB:
-            toArch.data[toIndex + i] = toArch.data[fromIndex + j]
+            toArch.data[toIndex + i] = fromArch.data[fromIndex + j]
 
             inc moved
             break addTyp
+
+      if moved == fromArch.typeCount:
+        break
+
     assert moved == fromArch.typeCount
 
     inc fromArch.generation
-    if entityId == fromArch.len:
-      fromArch.data.setLen(fromArch.len - fromArch.typeCount)
+
+    if entityId == fromArch.len - 1:
+      fromArch.data.setLen(fromArch.data.len - fromArch.typeCount)
     else:
-      var buffer = newSeqOfCap[(ref Component)](fromArch.len - fromArch.typeCount)
-      for i, x in fromArch.data:
-        if i notin fromIndex .. fromIndex + fromArch.typecount:
-          buffer.add x
-      fromArch.data = buffer
+      for i in fromIndex .. fromArch.data.high - fromArch.typeCount:
+        fromArch.data[i] = fromArch.data[i + fromArch.typeCount]
+      fromArch.data.setLen(fromArch.data.len - fromArch.typeCount)
 
 
 when isLowLevel:
@@ -271,18 +275,22 @@ else:
     result = nnkTupleConstr.newTree()
     for i, val in tup.getTypeImpl:
       result.add:
-        genast(val, ind, indArray, tup, i):
-          (ref typeof(tup[i]))(arch.data[indArray[i] + ind * arch.typeCount])
+        genast(val, ind, indArray, tup, i = newLit(i)):
+          (ref val)(arch.data[ind * arch.typeCount + indArray[i]])
 
 iterator foreach*(arch: ArchetypeBase, tup: typedesc[ComponentTuple]): auto =
   var
     indices: array[tupleLen(tup), int]
     found = 0
     def: tup
+
   for field in def.fields:
+
     if found >= indices.len:
       break
+
     for i in 0..<arch.typeCount:
+
       template ifMatches() =
         indices[found] = i
         inc found
@@ -383,10 +391,11 @@ proc addComponent*[T: Component](world: var World, entity: var Entity, component
           copyMem(arch.data[entity.entIndex * arch.stride + arch.componentOffset[i]].addr, compAddr, realCompSize(component))
 
       else:
-        let newComp = new typeof(Component)
+        let newComp = (ref T)()
         newComp[] = component
         arch.data[entity.entIndex + i] = newComp
       break
+
   if not madeNewArch:
     world.archetypes.add arch
 
