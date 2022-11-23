@@ -54,6 +54,10 @@ type
     archIndex, entIndex: int
     generation: int # Used to ensure we do not have an outdated pointer
 
+  QueryIndex*[T: ComponentTuple] = object
+    indices: seq[int]
+    generation: int
+
 template realCompSize*[T: Component](_: T): int = max(sizeof(T) - sizeof(pointer), 1) # We do not need type information so this is used to remove it from size
 
 template componentAddr*[T: Component](t: T): pointer =
@@ -162,6 +166,27 @@ iterator filter*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTu
       if found == requiredCount:
         yield arch
 
+iterator filterInd*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]): (int, ArchetypeBase) =
+  ## Iterates archetypes yielding all that can be converted to the tuple.
+  ## This means they share at least all components of `tup`
+  var def: tup
+  const requiredCount = tupleLen(tup)
+  for i, arch in archetypes:
+    if arch.typeCount >= requiredCount:
+      var found = 0
+      for field in def.fields:
+        for i in 0..<arch.typeCount:
+          when isLowLevel:
+            if arch.types[i] == field.getTypeInfo:
+              inc found
+          else:
+            if arch.types[i] == $typeof(field):
+              inc found
+
+
+      if found == requiredCount:
+        yield (i, arch)
+
 iterator filter*(archetypes: openarray[ArchetypeBase], typeInfo: openarray[TypeInfo]): (int, ArchetypeBase) =
   ## Iterates archetypes yielding the position an archetype appears and the archetype that can be converted to the tuple.
   ## This means they share at least all components of `tup`.
@@ -203,6 +228,21 @@ else:
       arch.data.add newComp
 
 when isLowLevel:
+  proc removeEntity(arch: ArchetypeBase, entityId: int) =
+    # This logic handles moving data around the old buffer
+    inc arch.generation # This invalidates any old Entity's, not the smartest but provents errors
+
+    let
+      fromIndex = entityId * arch.stride
+      newSize = arch.data.len - arch.stride
+
+    if fromIndex > 0:
+      if entityId != arch.len - 1:
+        moveMem(arch.data[fromIndex].unsafeAddr, arch.data[fromIndex + arch.stride].unsafeaddr, arch.data.len - fromIndex - arch.stride)
+    elif arch.len > 1:
+      moveMem(arch.data[0].unsafeAddr, arch.data[arch.stride].unsafeaddr, newSize) # copy from 0..movingEntity
+    arch.data.setLen(newSize)
+
   proc moveEntity(fromArch, toArch: ArchetypeBase, entityId: int) =
     # Need to copy fromArch to toArch then shrink fromArch
     # This is tricky cause component order matters
@@ -231,20 +271,19 @@ when isLowLevel:
 
     assert moved == fromArch.typeCount
 
-    inc fromArch.generation # This invalidates any old Entity's, not the smartest but provents errors
 
-
-    let newSize = fromArch.data.len - fromArch.stride
-
-    # This logic handles moving data around the old buffer
-    if fromIndex > 0:
-      if entityId != fromArch.len - 1:
-        moveMem(fromArch.data[fromIndex].unsafeAddr, fromArch.data[fromIndex + fromArch.stride].unsafeaddr, fromArch.data.len - fromIndex - fromArch.stride)
-    elif fromArch.len > 1:
-      moveMem(fromArch.data[0].unsafeAddr, fromArch.data[fromArch.stride].unsafeaddr, newSize) # copy from 0..movingEntity
-    fromArch.data.setLen(newSize)
+    fromArch.removeEntity(entityId)
 
 else:
+  proc removeEntity(arch: ArchetypeBase, entityId: int) =
+    # This logic handles moving data around the old buffer
+    inc fromArch.generation
+    let fromIndex = entityId * fromArch.typeCount
+
+    for i in fromIndex .. arch.data.high - arch.typeCount:
+      arch.data[i] = arch.data[i + arch.typeCount]
+    arch.data.setLen(arch.data.len - arch.typeCount)
+
   proc moveEntity(fromArch, toArch: ArchetypeBase, entityId: int) =
     # Need to copy fromArch to toArch then shrink fromArch
     # This is tricky cause component order matters
@@ -381,11 +420,11 @@ proc addComponent*[T: Component](world: var World, entity: var Entity, component
   var
     arch: ArchetypeBase
     ind = 0
-    madeNewArch = false
+    hasOldArch = false
 
   for i, filteredArch in world.archetypes.filter(neededComponents):
     arch = filteredArch
-    madeNewArch = true
+    hasOldArch = true
     ind = i
 
   if arch.isNil: # We dont have an arch that fits the type we need, make one
@@ -409,8 +448,62 @@ proc addComponent*[T: Component](world: var World, entity: var Entity, component
         arch.data[entity.entIndex * arch.typeCount + i] = newComp
       break
 
-  if not madeNewArch:
+  if not hasOldArch:
     world.archetypes.add arch
+
+proc removeComponent*[T: Component](world: var World, entity: var Entity, component: T) =
+  let fromArch = world.archetypes[entity.archIndex]
+  assert entity.generation == fromArch.generation
+
+  var
+    thisCompTypeInfo =
+      when isLowLevel:
+        component.getTypeInfo()
+      else:
+        $typeof(component)
+    neededComponents = fromArch.types
+
+  if (let foundIndex = neededComponents.find(thisCompTypeInfo); foundIndex > 0):
+    neededComponents.delete(foundIndex)
+
+  if neededComponents.len > 0:
+    var
+      arch: ArchetypeBase
+      ind = 0
+      hasOldArch = false
+
+    for i, filteredArch in world.archetypes.filter(neededComponents):
+      arch = filteredArch
+      hasOldArch = true
+      ind = i
+
+    if arch.isNil: # We dont have an arch that fits the type we need, make one
+      arch = makeArchetype(neededComponents, world.archeTypes[entity.archIndex], component)
+      ind = world.archetypes.len
+
+
+    fromArch.moveEntity(arch, entity.entIndex)
+    entity = Entity(archIndex: ind, entIndex: arch.len - 1, generation: arch.generation)
+
+    if not hasOldArch:
+      world.archetypes.add arch
+
+  else:
+    fromArch.removeEntity(entity.entIndex)
+
+
+iterator query*[T](world: var World, query: var QueryIndex[T]): auto =
+  if world.archetypes.len != query.generation:
+    for i, _ in filterInd(world.archetypes.toOpenArray(query.generation, world.archetypes.high), T):
+      query.indices.add i + query.generation
+    query.generation = world.archetypes.len
+
+  for queryInd in query.indices:
+    for ent in world.archetypes[queryInd].foreach(T):
+      yield ent
+
+
+
 
 when isMainModule:
   type

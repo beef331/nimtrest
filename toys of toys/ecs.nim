@@ -50,7 +50,8 @@ proc bounceOnWalls(world: var World) =
       vel.dy *= -1
 
 proc fall(world: var World) =
-  for (pos, vel, gravity, size) in world.foreach (Position, Velocity, Gravity, Size):
+  var fallQuery {.global.}: QueryIndex[(Position, Velocity, Gravity, Size)]
+  for (pos, vel, gravity, size) in world.query(fallQuery):
     # apply gravity only if not falling
     if not (pos.y > height - size.r or pos.y < size.r):
       vel.dy += gravity.ddy
@@ -65,7 +66,8 @@ proc airResistance(world: var World) =
       vel.dx = vel.dx*drag.coefficient
 
 proc drawBall(world: var World) =
-  for (pos, _, size) in world.foreach (Position, Draw, Size):
+  var drawQuery {.global.}: QueryIndex[(Position, Draw, Size)]
+  for (pos, _, size) in world.query(drawQuery):
     circleFill(pos.x, pos.y, size.r)
 
 
