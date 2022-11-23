@@ -90,13 +90,11 @@ proc makeArchetype*(tup: typedesc[ComponentTuple]): Archetype[tup] =
   let def = default(tup)
   var offset = 0
   for i, field in enumerate def.fields:
+    result.types.add field.getTheTypeInfo
     when isLowLevel:
-      result.types.add field.getTypeInfo()
       result.componentOffset.add offset
       offset.inc realCompSize(field)
       result.stride = offset
-    else:
-      result.types.add $typeof(field)
 
 
 proc makeArchetype[T: Component](typeInfo: sink seq[TypeInfo], previous: ArchetypeBase, newType: T): ArchetypeBase =
@@ -144,30 +142,14 @@ proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
       result.add ", "
   result.add ")"
 
-
-iterator filter*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]): ArchetypeBase =
-  ## Iterates archetypes yielding all that can be converted to the tuple.
-  ## This means they share at least all components of `tup`
-  var def: tup
-  const requiredCount = tupleLen(tup)
-  for arch in archetypes:
-    if arch.typeCount >= requiredCount:
-      var found = 0
-      for field in def.fields:
-        for i in 0..<arch.typeCount:
-          when isLowLevel:
-            if arch.types[i] == field.getTypeInfo:
-              inc found
-          else:
-            if arch.types[i] == $typeof(field):
-              inc found
-
-
-      if found == requiredCount:
-        yield arch
+proc getTheTypeInfo*(t: auto): TypeInfo =
+  when isLowLevel:
+    t.getTypeInfo()
+  else:
+    $typeof(t)
 
 iterator filterInd*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]): (int, ArchetypeBase) =
-  ## Iterates archetypes yielding all that can be converted to the tuple.
+  ## Iterates archetypes yielding all that can be converted to the tuple and the index.
   ## This means they share at least all components of `tup`
   var def: tup
   const requiredCount = tupleLen(tup)
@@ -176,16 +158,20 @@ iterator filterInd*(archetypes: openarray[ArchetypeBase], tup: typedesc[Componen
       var found = 0
       for field in def.fields:
         for i in 0..<arch.typeCount:
-          when isLowLevel:
-            if arch.types[i] == field.getTypeInfo:
-              inc found
-          else:
-            if arch.types[i] == $typeof(field):
-              inc found
+          if arch.types[i] == field.getTheTypeInfo:
+            inc found
 
 
       if found == requiredCount:
         yield (i, arch)
+
+iterator filter*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]): ArchetypeBase =
+  ## Iterates archetypes yielding all that can be converted to the tuple.
+  ## This means they share at least all components of `tup`
+  for _, arch in archetypes.filterInd(tup):
+    yield arch
+
+
 
 iterator filter*(archetypes: openarray[ArchetypeBase], typeInfo: openarray[TypeInfo]): (int, ArchetypeBase) =
   ## Iterates archetypes yielding the position an archetype appears and the archetype that can be converted to the tuple.
@@ -340,19 +326,11 @@ iterator foreach*(arch: ArchetypeBase, tup: typedesc[ComponentTuple]): auto =
       break
 
     for i in 0..<arch.typeCount:
-
-      template ifMatches() =
+      if arch.types[i] == field.getTheTypeInfo:
         indices[found] = i
         inc found
         if found >= indices.len:
           break
-
-      when isLowLevel:
-        if arch.types[i] == field.getTypeInfo():
-          ifMatches()
-      else:
-        if arch.types[i] == $typeof(field):
-          ifMatches()
 
   if found == tupleLen(tup):
     for i in 0..<arch.len:
@@ -376,12 +354,9 @@ iterator foreach*(world: World, t: typedesc[ComponentTuple]): auto =
 proc isApartOf*[T: ComponentTuple](entity: T, arch: ArchetypeBase): bool =
   if tupleLen(T) == arch.typeCount:
     for i, field in enumerate entity.fields:
-      when isLowLevel:
-        if arch.types[i] != field.getTypeInfo:
-          return false
-      else:
-        if arch.types[i] != $typeof(field):
-          return false
+      if arch.types[i] != field.getTheTypeInfo():
+        return false
+
     result = true
 
 proc getArch*(world: World, T: typedesc[ComponentTuple]): Archetype[T] =
@@ -408,11 +383,7 @@ proc addComponent*[T: Component](world: var World, entity: var Entity, component
   assert entity.generation == fromArch.generation
 
   var
-    thisCompTypeInfo =
-      when isLowLevel:
-        component.getTypeInfo()
-      else:
-        $typeof(component)
+    thisCompTypeInfo = component.getTheTypeInfo
     neededComponents = fromArch.types
   if thisCompTypeInfo notin neededComponents: # Dont add more fields than required
     neededComponents.add thisCompTypeInfo
@@ -456,11 +427,7 @@ proc removeComponent*[T: Component](world: var World, entity: var Entity, compon
   assert entity.generation == fromArch.generation
 
   var
-    thisCompTypeInfo =
-      when isLowLevel:
-        component.getTypeInfo()
-      else:
-        $typeof(component)
+    thisCompTypeInfo = component.getTheTypeInfo
     neededComponents = fromArch.types
 
   if (let foundIndex = neededComponents.find(thisCompTypeInfo); foundIndex > 0):
