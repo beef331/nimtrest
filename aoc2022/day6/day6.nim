@@ -1,6 +1,8 @@
-import std/[times, monotimes, setutils]
+import std/[times, monotimes]
 
-
+proc toSet(oa: openarray[char]): set['a'..'z'] =
+  for x in oa:
+    result.incl range['a'..'z'](x)
 
 let input = readFile("input.txt")
 var part1, part2 = 0
