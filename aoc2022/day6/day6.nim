@@ -17,6 +17,7 @@ for i in 0 .. input.high - 3:
    let matchingChars = input.toOpenArray(i, i + 13).toSet
    if matchingChars.len == 14 and part2 == 0:
      part2 = i + 14
+     break
 
   
 echo "Answer: Part1 - ", part1, " Part2 - ", part2, " | ", getMonoTime() - start
