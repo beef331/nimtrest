@@ -4,11 +4,8 @@ type
   DirKind = enum IsDir, IsFile
   DirectoryEntry = ref object
     size: int
-    case kind: DirKind
-    of IsDir:
-      children: Table[string, DirectoryEntry]
-      parent: DirectoryEntry
-    of IsFile: discard
+    children: Table[string, DirectoryEntry]
+    parent: DirectoryEntry
 
 proc addSizeToParents(dirEntry: DirectoryEntry, size: int) =
   var parent = dirEntry.parent
@@ -17,7 +14,7 @@ proc addSizeToParents(dirEntry: DirectoryEntry, size: int) =
     parent = parent.parent
 
 proc generateFs(s: string): DirectoryEntry =
-  result = DirectoryEntry(kind: IsDir)
+  result = DirectoryEntry()
   var currentDir = result
   let fs = newFileStream(s)
   defer: fs.close()
@@ -29,7 +26,7 @@ proc generateFs(s: string): DirectoryEntry =
         discard fs.readLine(buffer)
         var size: int
         if buffer.scanf("dir $+", nameBuffer):
-          let entry = DirectoryEntry(kind: IsDir, parent: currentDir)
+          let entry = DirectoryEntry(parent: currentDir)
           currentDir.children[nameBuffer] = entry
         elif buffer.scanf("$i $+", size, nameBuffer):
           currentDir.size += size
@@ -46,16 +43,15 @@ proc generateFs(s: string): DirectoryEntry =
       of "/":
         currentDir = result
       else:
-        if nameBuffer in currentDir.children and currentDir.children[nameBuffer].kind == IsDir:
+        if nameBuffer in currentDir.children:
           currentDir = currentDir.children[nameBuffer]
 
 proc solve1(root: DirectoryEntry): int =
   # Buh bye poor stack, I hardly knew ye
   for dir, entry in root.children.pairs:
-    if entry.kind == IsDir:
-      if entry.size <= 100000:
-        result.inc entry.size
-      result.inc solve1(entry)
+    if entry.size <= 100000:
+      result.inc entry.size
+    result.inc solve1(entry)
 
 proc solve2(root: DirectoryEntry, requiredSize = 0): int =
   let requiredSize =
@@ -66,10 +62,9 @@ proc solve2(root: DirectoryEntry, requiredSize = 0): int =
   result = int.high
   for dir, entry in root.children.pairs:
     let size = entry.size
-    if entry.kind == IsDir:
-      if entry.size >= requiredSize:
-        result = min(entry.size, result)
-      result = min(solve2(entry, requiredSize), result)
+    if entry.size >= requiredSize:
+      result = min(entry.size, result)
+    result = min(solve2(entry, requiredSize), result)
 
 import std/[times, monotimes]
 var start = getMonoTime()
