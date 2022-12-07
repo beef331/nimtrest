@@ -1,7 +1,6 @@
 import std/[tables, strscans, times, monotimes, streams, strutils]
 
 type
-  DirKind = enum IsDir, IsFile
   DirectoryEntry = ref object
     size: int
     children: Table[string, DirectoryEntry]
