@@ -25,8 +25,7 @@ proc generateFs(s: string): DirectoryEntry =
         discard fs.readLine(buffer)
         var size: int
         if buffer.scanf("dir $+", nameBuffer):
-          let entry = DirectoryEntry(parent: currentDir)
-          currentDir.children[nameBuffer] = entry
+          currentDir.children[nameBuffer] = DirectoryEntry(parent: currentDir)
         elif buffer.scanf("$i $+", size, nameBuffer):
           currentDir.size += size
           currentDir.addSizeToParents(size)
