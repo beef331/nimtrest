@@ -1,10 +1,10 @@
 import std/[tables, strscans, times, monotimes, streams, strutils]
 
 type
-  DirectoryEntry = ref object
+  DirectoryEntry {.acyclic.} = ref object
     size: int
     children: Table[string, DirectoryEntry]
-    parent: DirectoryEntry
+    parent {.cursor.}: DirectoryEntry
 
 proc addSizeToParents(dirEntry: DirectoryEntry, size: int) =
   var parent = dirEntry.parent
@@ -12,9 +12,10 @@ proc addSizeToParents(dirEntry: DirectoryEntry, size: int) =
     parent.size += size
     parent = parent.parent
 
-proc generateFs(s: string): DirectoryEntry =
-  result = DirectoryEntry()
-  var currentDir = result
+proc generateFs(s: string): seq[DirectoryEntry] =
+  result = newSeqOfCap[DirectoryEntry](100)
+  result.add DirectoryEntry()
+  var currentDir = result[0]
   let fs = newFileStream(s)
   defer: fs.close()
   var buffer, nameBuffer = newStringOfCap(80)
@@ -25,7 +26,10 @@ proc generateFs(s: string): DirectoryEntry =
         discard fs.readLine(buffer)
         var size: int
         if buffer.scanf("dir $+", nameBuffer):
-          currentDir.children[nameBuffer] = DirectoryEntry(parent: currentDir)
+          let entry = DirectoryEntry(parent: currentDir)
+          currentDir.children[nameBuffer] = entry
+          result.add entry
+
         elif buffer.scanf("$i $+", size, nameBuffer):
           currentDir.size += size
           currentDir.addSizeToParents(size)
@@ -37,41 +41,29 @@ proc generateFs(s: string): DirectoryEntry =
         if currentDir.parent != nil:
           currentDir = currentDir.parent
         else:
-          currentDir = result
+          currentDir = result[0]
       of "/":
-        currentDir = result
+        currentDir = result[0]
       else:
         if nameBuffer in currentDir.children:
           currentDir = currentDir.children[nameBuffer]
 
-proc solve1(root: DirectoryEntry): int =
+proc solve(entries: seq[DirectoryEntry]): (int, int) =
   # Buh bye poor stack, I hardly knew ye
-  for dir, entry in root.children.pairs:
-    if entry.size <= 100000:
-      result.inc entry.size
-    result.inc solve1(entry)
-
-proc solve2(root: DirectoryEntry, requiredSize = 0): int =
-  let requiredSize =
-    if requiredSize == 0:
-      30000000 - (70000000 - root.size)
-    else:
-      requiredSize
-  result = int.high
-  for dir, entry in root.children.pairs:
+  let requiredSize = 30000000 - (70000000 - entries[0].size)
+  result[1] = int.high
+  for entry in entries:
     let size = entry.size
-    if entry.size >= requiredSize:
-      result = min(entry.size, result)
-    result = min(solve2(entry, requiredSize), result)
+    if size >= requiredSize:
+      result[1] = min(size, result[1])
+    if size <= 100_000:
+      result[0] += size
 
 import std/[times, monotimes]
 var start = getMonoTime()
 let myFS = generateFs("input.txt")
 echo "Parse: ", getMonoTime() - start
 
-echo solve1(myFs)
-echo "Pt1: ", getMonoTime() - start
-
-echo solve2(myFs)
-echo "Pt2: ", getMonoTime() - start
+echo solve(myFs)
+echo "Pt 1 and 2: ", getMonoTime() - start
 
