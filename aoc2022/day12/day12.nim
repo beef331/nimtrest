@@ -1,4 +1,4 @@
-import std/[times, monotimes, intsets, deques]
+import std/[times, monotimes, deques]
 type
   Map = object
     nodes: seq[char]
@@ -8,15 +8,15 @@ type
     target: int
 
 proc loadMap(): Map =
-  result.nodes = newSeqOfCap[char](1000)
   for line in lines("input.txt"):
     result.width = line.len
     for ch in line:
-      if ch == 'S':
+      case ch
+      of 'S':
         result.nodes.add 'a'
         result.start = result.nodes.high
         result.allAs.add result.nodes.high
-      elif ch == 'E':
+      of 'E':
         result.nodes.add 'z'
         result.target = result.nodes.high
       else:
@@ -24,11 +24,10 @@ proc loadMap(): Map =
         if ch == 'a':
           result.allAs.add result.nodes.high
 
-
 proc getShortest(map: Map, pt2: static bool = false): int =
   var
-    queue = initDeque[(int, int)]()
-    visted = initIntSet()
+    queue = initDeque[(int, int)](30)
+    visited = newSeq[bool](map.nodes.len)
 
   when pt2:
     for a in map.allAs:
@@ -40,36 +39,31 @@ proc getShortest(map: Map, pt2: static bool = false): int =
     let
       (ind, steps) = queue.popFirst
       node = map.nodes[ind]
+      highestVal = succ(node)
       upIndex = ind - map.width
       downIndex = ind + map.width
       leftIndex = ind - 1
       rightIndex = ind + 1
 
-    proc maybeAdd(val: int) =
-      if map.nodes[val] <= succ(node) and val notin visted:
-        queue.addLast (val, steps + 1)
-        visted.incl val
-
-    template breakIfEnd(val: int) =
-      if val == map.target and map.nodes[val] <= succ(node):
-        result = steps + 1
-        break
+    template checkLogic(val: int) =
+      if map.nodes[val] <= highestVal:
+        if not visited[val]:
+          queue.addLast (val, steps + 1)
+          visited[val] = true
+        if val == map.target:
+          return steps + 1
 
     if upIndex >= 0:
-      breakIfEnd(upIndex)
-      maybeAdd(upIndex)
+      checkLogic(upIndex)
 
     if downIndex <= map.nodes.high:
-      breakIfEnd(downIndex)
-      maybeAdd(downIndex)
+      checkLogic(downIndex)
 
     if ind mod map.width > 0:
-      breakIfEnd(leftIndex)
-      maybeAdd(leftIndex)
+      checkLogic(leftIndex)
 
     if ind mod map.width + 1 < map.width:
-      breakIfEnd(rightIndex)
-      maybeAdd(rightIndex)
+      checkLogic(rightIndex)
 
 
 
