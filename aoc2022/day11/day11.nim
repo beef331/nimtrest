@@ -1,5 +1,4 @@
-import std/[parseutils, strscans, streams, strutils, math, times, monotimes]
-
+import std/[parseutils, strscans, streams, strutils, times, monotimes]
 type
   Monkey = object
     items: seq[int]
@@ -10,7 +9,7 @@ type
     inspects: int
 
 proc parseMonkey(fs: Stream, buffer: var string, lcd: var int): Monkey =
-  assert fs.readLine(buffer)
+  doAssert fs.readLine(buffer)
   var
     i = buffer.skipUntil(Digits)
     myInt = 0
@@ -18,25 +17,24 @@ proc parseMonkey(fs: Stream, buffer: var string, lcd: var int): Monkey =
     i += buffer.parseInt(myInt, i) + 2
     result.items.add myInt
 
-  assert fs.readLine(buffer)
+  doAssert fs.readLine(buffer)
   var op: char
   if buffer.scanf("  Operation: new = old $c old", op):
     result.modifier = -1
   else:
-    assert buffer.scanf("  Operation: new = old $c $i", op, result.modifier)
+    doAssert buffer.scanf("  Operation: new = old $c $i", op, result.modifier)
   result.doesMultiply = op == '*'
 
-  assert fs.readLine(buffer)
-  assert buffer.scanf("  Test: divisible by $i", result.divVal)
+  doAssert fs.readLine(buffer)
+  doAssert buffer.scanf("  Test: divisible by $i", result.divVal)
 
   lcd *= result.divVal
 
-  assert fs.readLine(buffer)
-  assert buffer.scanf("    If true: throw to monkey $i", result.target[true])
+  doAssert fs.readLine(buffer)
+  doAssert buffer.scanf("    If true: throw to monkey $i", result.target[true])
 
-  assert fs.readLine(buffer)
-  assert buffer.scanf("    If false: throw to monkey $i", result.target[false])
-
+  doAssert fs.readLine(buffer)
+  doAssert buffer.scanf("    If false: throw to monkey $i", result.target[false])
 
 proc processMonkey(monkeys: var openarray[Monkey], monkey: var Monkey, lcd: int = -1) =
   for val in monkey.items.items:
@@ -60,6 +58,7 @@ proc processMonkey(monkeys: var openarray[Monkey], monkey: var Monkey, lcd: int 
     let target = monkey.target[newWorry mod monkey.divVal == 0]
     inc monkey.inspects
     monkeys[target].items.add newWorry
+
   monkey.items.setLen(0)
 
 proc solution: (int, int) =
@@ -76,7 +75,6 @@ proc solution: (int, int) =
       monkeys.add parseMonkey(fs, buffer, lcd)
 
   echo "Parse: ", getMonoTime() - start
-
   var monkeysB = monkeys
 
   start = getMonoTime()
