@@ -72,4 +72,5 @@ echo "Pt1: ", sim1.simulate(), " ", getMonoTime() - start
 start = getMonoTime()
 for i in 0..<width:
   sim2.data[(sim2.lowestRock + 2) * width + i] = Particle(kind: Rock)
+
 echo "Pt2: ", sim2.simulate(), " ", getMonoTime() - start
