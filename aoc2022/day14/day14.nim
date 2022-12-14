@@ -1,4 +1,4 @@
-import std/[parseutils, enumerate]
+import std/[parseutils, enumerate, intsets, times, monotimes]
 
 const width = 700 # Hey it works here for pt2
 type
@@ -8,6 +8,7 @@ type
   ParticleSim = object
     lowestRock: int
     data: array[width * 200, Particle]
+    lastParticle: int
 
 
 proc addRocks(sim: var ParticleSim, frm, to: (int, int)) =
@@ -30,11 +31,9 @@ proc parseInput(): ParticleSim =
       frm = to
 
 proc fullySimmed(sim: ParticleSim): bool =
-  for i, particle in sim.data:
-    if particle.kind == Sand:
-      let (x, y) = (i mod width, i div width)
-      if y > sim.lowestRock + 1:
-        return true
+  let y = sim.lastParticle div width
+  if y > sim.lowestRock + 1:
+      return true
 
 proc canStep(sim: ParticleSim, pos: int): bool =
   if pos + width > sim.data.high:
@@ -53,6 +52,7 @@ proc step(sim: var ParticleSim) =
       if sim.data[nextPos].kind == Air:
         swap(sim.data[nextPos], sim.data[sandPos])
         sandPos = nextPos
+        sim.lastParticle = sandPos
         break
 
 proc simulate(sim: var ParticleSim): int =
@@ -67,9 +67,9 @@ var
   sim1 = parseInput()
   sim2 = sim1
 
+var start = getMonoTime()
+echo "Pt1: ", sim1.simulate(), " ", getMonoTime() - start
+start = getMonoTime()
 for i in 0..<width:
   sim2.data[(sim2.lowestRock + 2) * width + i] = Particle(kind: Rock)
-
-
-echo sim1.simulate()
-echo sim2.simulate()
+echo "Pt2: ", sim2.simulate(), " ", getMonoTime() - start
