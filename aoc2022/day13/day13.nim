@@ -1,4 +1,4 @@
-import std/[parseutils, enumerate, streams, strutils]
+import std/[parseutils, enumerate, streams, strutils, sugar, algorithm]
 
 type
   Comparison = enum Less, Equal, Greater
@@ -55,16 +55,16 @@ proc compare(a, b: Packet): Comparison =
         for i in 0..<min(aLen, bLen):
           result = a.entries[i].compare(b.entries[i])
           if result in {Greater, Less}:
-            break
+            return
 
-        if result == Equal:
-          if aLen > bLen:
-            result = Greater
-          elif aLen < bLen:
-            result = Less
+        if aLen > bLen:
+          result = Greater
+        elif aLen < bLen:
+          result = Less
+        else:
+          result = Equal
 
-
-  #echo a, " is ", result, " ", b
+proc myCompare(a, b: Packet): int = ord(compare(a, b)) - 1
 
 proc parsePacket(line: string, pos: var int): Packet =
   result = packetList()
@@ -83,32 +83,57 @@ proc parsePacket(line: string, pos: var int): Packet =
     else:
       inc pos
 
-proc parseInput(): seq[array[2, Packet]] =
-  let fs = newFileStream("test.txt")
+proc parseInput(): seq[Packet] =
+  let fs = newFileStream("input.txt")
   defer: fs.close()
   var buffer = newStringOfCap(80)
   while not fs.atEnd():
-    var
-      i = 1
-      arr: array[2, Packet]
+    var i = 1
     doAssert fs.readLine(buffer)
-    arr[0] = buffer.parsePacket(i)
+    result.add buffer.parsePacket(i)
     i = 1
     doAssert fs.readLine(buffer)
-    arr[1] = buffer.parsePacket(i)
+    result.add buffer.parsePacket(i)
     if fs.peekLine(buffer):
       discard fs.readLine(buffer)
-    result.add arr
 
+import std/[times, monotimes]
 
-
+var start = getMonoTime()
 let packets = parseInput()
-var val = 0
 
-for i, x in packets:
+
+let
+  sixPacket = packetList(packetEntry(6))
+  twoPacket = packetList(packetEntry(2))
+
+var pt2Packets = packets
+pt2Packets.add sixPacket
+pt2Packets.add twoPacket
+pt2Packets.sort(myCompare)
+
+echo "Parsing: ", getMonoTime() - start
+
+
+start = getMonoTime()
+
+var pt1, pt2 = 0
+for i in countup(0, packets.high, 2):
   #echo "\n", x[0], " vs. ", x[1]
-  if x[0].compare(x[1]) != Greater:
-    echo i + 1
-    val += i + 1
+  if packets[i].compare(packets[i + 1]) != Greater:
+    pt1 += i div 2 + 1
 
-echo val
+echo "Pt1: ", getMonoTime() - start
+
+start = getMonoTime()
+
+for i, x in pt2Packets:
+  if x.compare(twoPacket) == Equal:
+    pt2 = i + 1
+  elif x.compare(sixPacket) == Equal:
+    pt2 *= i + 1
+
+echo "Pt2: ", getMonoTime() - start
+
+
+echo pt1, " ", pt2
