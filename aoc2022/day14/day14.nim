@@ -30,16 +30,13 @@ proc parseInput(): ParticleSim =
       result.addRocks(frm, to)
       frm = to
 
-proc fullySimmed(sim: ParticleSim): bool =
-  let y = sim.lastParticle div width
-  if y > sim.lowestRock + 1:
-      return true
+proc fullySimmed(sim: ParticleSim): bool = sim.lastParticle div width > sim.lowestRock + 1
 
 proc canStep(sim: ParticleSim, pos: int): bool =
   if pos + width > sim.data.high:
     result = false
   else:
-    for nextPos in [pos + width, pos + width - 1, pos + width + 1]:
+    for nextPos in [pos + width - 1, pos + width,  pos + width + 1]:
       if sim.data[nextPos].kind == Air:
         return true
 
@@ -63,14 +60,17 @@ proc simulate(sim: var ParticleSim): int =
       break
     sim.step()
 
+var start = getMonoTime()
 var
   sim1 = parseInput()
   sim2 = sim1
-
-var start = getMonoTime()
-echo "Pt1: ", sim1.simulate(), " ", getMonoTime() - start
-start = getMonoTime()
 for i in 0..<width:
   sim2.data[(sim2.lowestRock + 2) * width + i] = Particle(kind: Rock)
+echo "Parse and Copy: ", getMonoTime() - start
+
+start = getMonoTime()
+echo "Pt1: ", sim1.simulate(), " ", getMonoTime() - start
+start = getMonoTime()
+
 
 echo "Pt2: ", sim2.simulate(), " ", getMonoTime() - start
