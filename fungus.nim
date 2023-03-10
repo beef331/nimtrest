@@ -16,7 +16,7 @@ macro adtEnum*(name, body: untyped): untyped =
       caseDef.add ofBranch(enumName, newNilLit())
 
     of nnkCall, nnkCommand:
-      if entry.len != 2:
+      if entry.len != 2 or (entry[1].kind != nnkStmtList and entry[1][0].kind != nnkTupleTy):
         error("Invalid entry expected `name: tuple[...].")
       typeNames.add entry[0]
       let
@@ -30,11 +30,16 @@ macro adtEnum*(name, body: untyped): untyped =
           converter procName(arg: sink tupl): typ= typ name(kind: enumName, dataName: arg)
           converter toTuple(arg: typ): lent tupl = name(arg).dataName
           converter toTuple(arg: var typ): var tupl = name(arg).dataName
+
+          converter `toName`(arg: typ): name = name(arg)
+          converter `toName`(arg: var typ): var name = name(arg)
+
           proc to(val: name, _: typedesc[typ]): lent typ =
             if val.kind != enumName:
               raise (ref FungusConvDefect)(msg: "Cannot convert '$#' to '$#'." % [$val.kind, $enumName])
             typ name(val)
-          proc to(val: var name, _: typedesc[typ]): typ =
+
+          proc to(val: var name, _: typedesc[typ]): var typ =
             if val.kind != enumName:
               raise (ref FungusConvDefect)(msg: "Cannot convert '$#' to '$#'." % [$val.kind, $enumName])
             typ name(val)
@@ -46,7 +51,7 @@ macro adtEnum*(name, body: untyped): untyped =
             genast(field, typ, fieldTyp, name, dataName = NimNode(dataName)):
               proc field(val: typ): lent fieldTyp = name(val).dataName.field
               proc field(val: var typ): var fieldTyp = name(val).dataName.field
-              proc field(val: var typ, newVal: fieldTyp) = name(val).dataName.field = newVal
+              proc `field=`(val: var typ, newVal: fieldTyp) = name(val).dataName.field = newVal
 
 
     else:
@@ -68,20 +73,27 @@ macro adtEnum*(name, body: untyped): untyped =
         type typeName = distinct name
 
   result.add addons
-
-# TODO: Add a copy of staticcases for primitive matching
+  echo result.repr
 
 
 adtEnum(Shape):
   None
-  Circle: tuple[r, x, y: int]
-  Rectangle: tuple[w, h, x, y: int]
+  Circle: tuple[x, y, r: int]
+  Rectangle: tuple[x, y, w, h: int]
   Line: tuple[x1, y1, x2, y2: int]
 
 
-var a = Shape (r: 100, x: 10, y: 100).toCircle()
-echo a.to(Circle).r
-echo a.to(Circle)
+var a = Shape (x: 10, y: 100, r: 100).toCircle()
+a.to(Circle).r = 300
+echo a.to(Circle).toTuple
 
-
-
+# TODO: Add a copy of staticcases for primitive matching
+dumptree:
+  match a:
+  of Circle as circ:
+    echo circ
+  of Rectangle as (w, _, x, y):
+    echo w
+  of Line as mut(x1, _, x2, _):
+    inc x1
+  else: discard
