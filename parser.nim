@@ -1,10 +1,11 @@
-import std/[macros, options, parseutils, strutils, strformat, strbasics]
+import std/[macros, options, parseutils, strutils, strformat, strbasics, sets]
 import assume/typeit
 
 template shortName*(s: char) {.pragma.}
 template longName*(s: string) {.pragma.}
 template absolutePos*(i: int) {.pragma.}
 template parser*(s: proc(s: openarray[char]): Option[auto]) {.pragma.}
+template helpMessage*(s: string) {.pragma.}
 template toggle*(){.pragma.}
 template remainder*(){.pragma.}
 
@@ -111,7 +112,6 @@ proc fromCli*[t]( _: typedesc[t], cmdLine: openarray[char]): t =
                 when hasToggle:
                   toggleParam(it)
                 else:
-                  echo astToStr(it), " assigned to ",  cmdLine.toOpenArray(name.b + 2 + arg.value.a, arg.value.b)
                   cliParse(cmdLine.toOpenArray(name.b + 2 + arg.value.a, arg.value.b), it)
               break assignArg
 
@@ -120,10 +120,52 @@ proc fromCli*[t]( _: typedesc[t], cmdLine: openarray[char]): t =
             const absVal = it.getCustomPragmaVal(absolutePos)
             if absVal == absCount:
               {.cast(uncheckedAssign).}:
-                echo astToStr(it), " assigned to ",  cmdLine.toOpenArray(arg.value.a, arg.value.b)
                 cliParse(cmdLine.toOpenArray(arg.value.a, arg.value.b), it)
               inc absCount
               break assignArg
+
+
+proc printHelpMessage(T: typedesc) =
+  var
+    res: T
+    printed: HashSet[string]
+
+  typeIt(res, {titAllFields, titDeclaredOrder}):
+    var msg: string
+    const
+      hasLongName = it.hasCustomPragma(longName)
+      hasShortName = it.hasCustomPragma(shortName)
+      isToggle = it.hasCustomPragma(toggle)
+
+    when hasLongName:
+      msg.add "--"
+      msg.add it.getCustomPragmaVal(longName)
+      when not isToggle:
+        msg.add ":"
+        msg.add $typeof(it)
+      msg.add " "
+
+    when hasShortName:
+      msg.add "-"
+      msg.add it.getCustomPragmaVal(shortName)
+      when not isToggle:
+        msg.add ":"
+        msg.add $typeof(it)
+      msg.add " "
+
+    when not (hasShortName or hasLongName):
+      msg.add astToStr(it).split(".")[^1]
+      msg.add " "
+
+    when it.hasCustomPragma(helpMessage):
+      msg.add " | "
+      msg.add it.getCustomPragmaVal(helpMessage)
+      msg.add " "
+
+    if msg notin printed:
+      echo msg
+      printed.incl msg
+
 
 type BuildOptions = enum
   init, build, setup, help, version
@@ -139,18 +181,20 @@ proc toggleParam(b: var bool) = b = true
 
 type
   MyOptions = object
-    case command {.absolutePos: 1.}: BuildOptions
+    case command {.absolutePos: 1, helpMessage: "What command to run, this can be 'init', 'setup', 'build', 'version', 'help'." .}: BuildOptions
     of init:
-      name {.absolutePos: 2.}: string
-      initSdk {.longName: "sdk", shortname: 's'.}: string
-      nimbase: string
+      name {.absolutePos: 2, helpMessage: "Name of project.".}: string
+      initSdk {.longName: "sdk", shortname: 's', helpMessage: "Sdk path to use for this project".}: string
+      nimbase {.helpMessage: "Location of nimbase.h to use."}: string
     of setup:
-      setupSdk {.longName: "sdk", shortname: 's'.}: string
+      setupSdk {.longName: "sdk", shortname: 's', helpMessage: "Sdk path to use for this project".}: string
     of build:
-      mainProgram {.absolutePos: 2.}: string
-      output: string
+      mainProgram {.absolutePos: 2 helpMessage: "Program to compile".}: string
+      output {.helpMessage: "output directory".}: string
     else: discard
-    doThing {.toggle, shortName: 'd'.}: bool
+    doThing {.toggle, shortName: 'd', helpMessage: "Whether one should doThing.".}: bool
+
+MyOptions.printHelpMessage()
 
 
 echo MyOptions.fromCli """build --output:hello hello.nim"""
