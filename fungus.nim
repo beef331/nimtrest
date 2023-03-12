@@ -1,6 +1,7 @@
 import std/[macros, genasts, strutils, macrocache, decls, sets]
 import pkg/micros
 
+type ADTBase = object of RootObj
 
 const adtTable = CacheTable"FungusTable"
 
@@ -38,7 +39,8 @@ macro adtEnum*(name, body: untyped): untyped =
           dataName = NimNode(dataName),
           typ,
           tupl = entry[1],
-          procName = ident("to" & $entry[0])
+          procName = ident("to" & $entry[0]),
+          res = ident"result"
         ):
           converter procName(arg: sink tupl): typ = typ name(kind: enumName, dataName: arg)
           converter toTuple(arg: typ): lent tupl = name(arg).dataName
@@ -59,6 +61,10 @@ macro adtEnum*(name, body: untyped): untyped =
 
           proc init(_: typedesc[typ], tup: tupl): typ = tup
 
+          proc `$`(val: typ): string =
+            res = $typ
+            res.add $toTuple(val)
+
       for iDef in entry[1][0]:
         let fieldTyp = iDef[^2]
         for field in iDef[0..^3]:
@@ -76,7 +82,7 @@ macro adtEnum*(name, body: untyped): untyped =
   result = newStmtList(NimNode enumDef(NimName enumName, enumFields))
   NimNode(caseDef)[0] = NimNode identDef(NimName NimNode(caseDef)[0], NimNode enumName)
   let
-    objDef = objectDef(NimName name)
+    objDef = objectDef(NimName name, parent = bindSym"ADTBase")
     recCase = nnkRecCase.newTree()
   NimNode(caseDef).copyChildrenTo(recCase)
   objDef.recList = nnkRecList.newTree recCase
@@ -99,7 +105,7 @@ proc getKind(data, toLookFor: NimNode): NimNode =
       return data[1][i]
   error("Invalid `kind`.", toLookFor)
 
-macro match*(val: typed, branches: varargs[untyped]): untyped =
+macro match*(val: ADTBase, branches: varargs[untyped]): untyped =
   result = nnkIfStmt.newTree()
   let
     adtData = adtTable[val.getTypeInst.signatureHash]
@@ -190,12 +196,54 @@ macro match*(val: typed, branches: varargs[untyped]): untyped =
     if unimplemented.len > 0:
       error("Unhandled type branch for: " & $unimplemented)
 
-
 adtEnum(Shape):
   None
   Circle: tuple[x, y, r: int]
   Rectangle: tuple[x, y, w, h: int]
   Line: tuple[x1, y1, x2, y2: int]
+
+proc getDeclInfo(matcher: NimNode): (NimNode, NimNode, bool) =
+  let matcher =
+    if matcher.kind in {nnkStmtList, nnkStmtListExpr}:
+      matcher[0]
+    else:
+      matcher
+
+  case matcher.kind
+  of nnkLetSection, nnkVarSection:
+    if matcher.len != 1 or matcher[0].len != 3:
+      error("Too many declared variables.")
+    let def = matcher[0]
+    if def[^1].kind != nnkEmpty:
+      error("No reason to have a value")
+
+    result = (def[0], def[1], matcher.kind == nnkVarSection)
+
+  of nnkTupleConstr:
+    if matcher.len != 1:
+      error("Attempting to declare more than one match.", matcher)
+
+    if matcher[0].kind != nnkExprColonExpr:
+      error("Invalid match declaration expected 'a: type'.", matcher)
+
+    result = (matcher[0][0], matcher[0][1], false)
+  else:
+    error("Invalid match, expected '(a: type)' or '(var a: type)'", matcher)
+
+
+macro `as`*(val: ADTBase, matcher: untyped): untyped =
+  let
+    (name, T, isVar) = getDeclInfo(matcher)
+    adtData = adtTable[val.getTypeInst.signatureHash]
+    theKind = getKind(adtData, T)
+  if isVar:
+    result = genast(theKind, val, T, name):
+      (let isMatch = val.kind == theKind; isMatch) and
+      (var name {.byAddr.} = T val; isMatch)
+  else:
+    result = genast(theKind, val, T, name):
+      (let isMatch = val.kind == theKind; isMatch) and
+      (let name = T val; isMatch)
 
 
 var a = Shape Circle.init (x: 10, y: 100, r: 100)
@@ -203,18 +251,20 @@ a.to(Circle).r = 300
 echo a.to(Circle).toTuple
 a = Shape Line.init (0, 0, 1, 1)
 
+if a as (var myVar: Line):
+  inc myVar.x1
+  echo myVar
+elif a as (myOtherVar: Circle):
+  echo myOtherVar
+
 match a:
 of Circle as mut circ:
   circ.r = 1000
-  echo circ.toTuple
+  echo circ
 of Rectangle as rect:
-  echo rect.toTuple
+  echo rect
 of Line as (mut x1, _, x2, _):
   inc x1
-  echo a
+  echo a.to(Line)
 else: discard
 
-#[
-  if (let (isCirc, circ) = a.match(Circle); isCirc):
-    echo "hmm"
-]#
