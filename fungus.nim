@@ -238,12 +238,12 @@ macro `as`*(val: ADTBase, matcher: untyped): untyped =
     theKind = getKind(adtData, T)
   if isVar:
     result = genast(theKind, val, T, name):
-      (let isMatch = val.kind == theKind; isMatch) and
-      (var name {.byAddr.} = T val; isMatch)
+      val.kind == theKind and
+      (var name {.byAddr.} = T val; true)
   else:
     result = genast(theKind, val, T, name):
-      (let isMatch = val.kind == theKind; isMatch) and
-      (let name = T val; isMatch)
+      val.kind == theKind and
+      (let name = T val; true)
 
 
 var a = Shape Circle.init (x: 10, y: 100, r: 100)
