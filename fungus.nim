@@ -201,12 +201,6 @@ macro match*(val: ADTBase, branches: varargs[untyped]): untyped =
     if unimplemented.len > 0:
       error("Unhandled type branch for: " & $unimplemented)
 
-adtEnum(Shape):
-  None
-  Circle: tuple[x, y, r: int]
-  Rectangle: tuple[x, y, w, h: int]
-  Line: tuple[x1, y1, x2, y2: int]
-
 proc getDeclInfo(matcher: NimNode): (NimNode, NimNode, bool) =
   let matcher =
     if matcher.kind in {nnkStmtList, nnkStmtListExpr}:
@@ -250,6 +244,13 @@ macro `as`*(val: ADTBase, matcher: untyped): untyped =
       val.kind == theKind and
       (let name = T val; true)
 
+
+
+adtEnum(Shape):
+  None
+  Circle: tuple[x, y, r: int]
+  Rectangle: tuple[x, y, w, h: int]
+  Line: tuple[x1, y1, x2, y2: int]
 
 var a = Shape Circle.init (x: 10, y: 100, r: 100)
 a.to(Circle).r = 300
