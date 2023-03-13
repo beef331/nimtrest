@@ -1,9 +1,14 @@
 import std/[macros, genasts, strutils, macrocache, decls, sets]
 import pkg/micros
 
-type ADTBase = object of RootObj
 
 const adtTable = CacheTable"FungusTable"
+
+macro isAdt(t: typed) =
+  newLit adtTable[t.getTypeInst.signatureHash]
+
+type ADTBase = concept t
+  isAdt(t)
 
 type FungusConvDefect = object of Defect
 
@@ -82,7 +87,7 @@ macro adtEnum*(name, body: untyped): untyped =
   result = newStmtList(NimNode enumDef(NimName enumName, enumFields))
   NimNode(caseDef)[0] = NimNode identDef(NimName NimNode(caseDef)[0], NimNode enumName)
   let
-    objDef = objectDef(NimName name, parent = bindSym"ADTBase")
+    objDef = objectDef(NimName name)
     recCase = nnkRecCase.newTree()
   NimNode(caseDef).copyChildrenTo(recCase)
   objDef.recList = nnkRecList.newTree recCase
