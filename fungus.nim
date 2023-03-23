@@ -4,8 +4,8 @@ import pkg/micros
 
 const adtTable = CacheTable"FungusTable"
 
-macro isAdt(t: typed) =
-  newLit adtTable[t.getTypeInst.signatureHash]
+macro isAdt(t: typed): untyped =
+  newLit(t.getTypeInst.signatureHash in adtTable)
 
 type ADTBase = concept t
   isAdt(t)
@@ -15,10 +15,33 @@ type FungusConvDefect = object of Defect
 macro subscribeAdt(name: typed, enumFields: untyped, typeNames: untyped) =
   adtTable[name.signatureHash] = newStmtList(name, enumFields, typenames)
 
-macro adtEnum*(name, body: untyped): untyped =
+macro adtEnum*(origName, body: untyped): untyped =
   var typeNames, enumFields, addons: seq[NimNode]
+  let
+    name =
+      if origName.kind == nnkBracketExpr:
+        origName[0]
+      else:
+        origName
 
-  let caseDef = caseStmt(NimName ident"kind")
+    caseDef = caseStmt(NimName ident"kind")
+    genericParams =
+      if origName.kind == nnkBracketExpr:
+        origName[1..^1]
+      else:
+        @[newEmptyNode()]
+    instantiatedType =
+      if origName.kind == nnkBracketExpr:
+        let expr = nnkBracketExpr.newTree(origName[0])
+        for param in genericParams:
+          if param.kind == nnkIdent:
+            expr.add param
+          elif param.kind == nnkExprColonExpr:
+            expr.add param[0]
+        expr
+      else:
+        origName
+
   for entry in body:
     case entry.kind
     of nnkIdent:
@@ -26,6 +49,26 @@ macro adtEnum*(name, body: untyped): untyped =
       let enumName = ident($entry & "Kind")
       enumFields.add NimNode enumField(enumName)
       caseDef.add ofBranch(enumName, newNilLit())
+
+
+      addons.add:
+        genAst(
+          name,
+          enumName,
+          typ = entry,
+          procName = ident("to" & $entry),
+          res = ident"result"
+        ):
+
+          proc to(val: name, _: typedesc[typ]): lent typ =
+            if val.kind != enumName:
+              raise (ref FungusConvDefect)(msg: "Cannot convert '$#' to '$#'." % [$val.kind, $enumName])
+            typ name(val)
+
+          proc init(_: typedesc[typ]): typ = typ name(kind: enumName)
+
+          proc `$`(val: typ): string =
+            $typ & "()"
 
     of nnkCall, nnkCommand:
       if entry.len != 2 or (entry[1].kind != nnkStmtList and entry[1][0].kind != nnkTupleTy):
@@ -91,18 +134,34 @@ macro adtEnum*(name, body: untyped): untyped =
     recCase = nnkRecCase.newTree()
   NimNode(caseDef).copyChildrenTo(recCase)
   objDef.recList = nnkRecList.newTree recCase
+
+  if origName.kind == nnkBracketExpr:
+    for param in origName[1..^1]:
+      case param.kind
+      of nnkExprColonExpr:
+        objDef.addGeneric identDef(NimName param, param[1])
+      of nnkIdent:
+        objDef.addGeneric identDef(NimName param, newEmptyNode())
+      else:
+        error("Unexpected generic constraint", param)
+
   result[0].add NimNode objDef
 
   for i, typeName in typeNames:
     result.add:
-      genast(name, typeName, field = enumFields[i]):
-        type typeName = distinct name
+      genast(instantiatedType, typeName, field = enumFields[i]):
+        type typeName = distinct instantiatedType
+    result[^1][0] = objDef.genericParamList()
+
+
+
 
   result.add addons
   result.add newCall(bindSym"subscribeAdt", name,
     nnkBracket.newTree(enumFields),
     nnkBracket.newTree(typeNames)
   )
+  echo result.repr
 
 proc getKind(data, toLookFor: NimNode): NimNode =
   for i, name in data[2]:
@@ -230,7 +289,7 @@ proc getDeclInfo(matcher: NimNode): (NimNode, NimNode, bool) =
     error("Invalid match, expected '(a: type)' or '(var a: type)'", matcher)
 
 
-macro `as`*(val: ADTBase, matcher: untyped): untyped =
+macro `from`*(matcher: untyped, val: ADTBase): untyped =
   let
     (name, T, isVar) = getDeclInfo(matcher)
     adtData = adtTable[val.getTypeInst.signatureHash]
@@ -244,8 +303,6 @@ macro `as`*(val: ADTBase, matcher: untyped): untyped =
       val.kind == theKind and
       (let name = T val; true)
 
-
-
 adtEnum(Shape):
   None
   Circle: tuple[x, y, r: int]
@@ -257,10 +314,10 @@ a.to(Circle).r = 300
 echo a.to(Circle).toTuple
 a = Shape Line.init (0, 0, 1, 1)
 
-if a as (var myVar: Line):
+if (var myVar: Line) from a:
   inc myVar.x1
   echo myVar
-elif a as (myOtherVar: Circle):
+elif (myOtherVar: Circle) from a:
   echo myOtherVar
 
 match a:
@@ -273,4 +330,46 @@ of Line as (mut x1, _, x2, _):
   inc x1
   echo a.to(Line)
 else: discard
+
+
+adtEnum(LinkedList[T: SomeNumber]):
+  Nil
+  Node: tuple[n: ref LinkedList[T], val: T]
+
+proc newNode(val: int): Node =
+  result = toNode ((ref LinkedList)(), val)
+  result.n[] = LinkedList Nil.init()
+
+
+proc prepend*(node: LinkedList, val: int): LinkedList =
+  let myRef = new (ref LinkedList)
+  myRef[] = node
+  (myRef, val).toLinkedList
+
+
+proc len(list: LinkedList): int =
+  var list = list
+  while (node: Node) from list:
+    inc result
+    list = node.n[]
+
+proc `$`(list: LinkedList): string =
+  var list = list
+  result = "["
+  while (node: Node) from list:
+    result.add $node.val
+    result.add ", "
+    list = node.n[]
+
+  if result.len > 1:
+    result.setLen(result.len - 2)
+  result.add "]"
+
+var myList = LinkedList newNode(10)
+myList = myList.prepend(11)
+myList = myList.prepend(12)
+myList = myList.prepend(13)
+echo myList
+echo myList.len
+
 

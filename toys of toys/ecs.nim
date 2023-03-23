@@ -29,6 +29,8 @@ type
 
   Draw = object of Component
 
+  Square = object of Component
+
 proc moveSystem(world: var World) =
   for (pos, vel, size) in world.foreach (Position, Velocity, Size):
     let oldPosition = pos
@@ -66,10 +68,16 @@ proc airResistance(world: var World) =
       vel.dx = vel.dx*drag.coefficient
 
 proc drawBall(world: var World) =
-  var drawQuery {.global.}: QueryIndex[(Position, Draw, Size)]
+  var drawQuery {.global.}: QueryIndex[(Position, Draw, Size, Not[Square])]
+  var drawGravityQuery {.global.}: QueryIndex[(Position, Draw, Size, Square)]
+  fill(255, 255, 255, 255)
   for (pos, _, size) in world.query(drawQuery):
+    fill(255, 255, 255, 255)
     circleFill(pos.x, pos.y, size.r)
 
+  for (pos, _, size, _) in world.query(drawGravityQuery):
+    fill(255, 0, 0, 255)
+    rectFill(pos.x, pos.y, size.r, size.r)
 
 var world = World()
 
@@ -83,7 +91,7 @@ proc draw() =
   moveSystem(world)
   drawBall(world)
 
-proc newBall(r, x, y, dx, dy: float; bounce: bool, ddx, ddy = 0d; coeff = 1.0) =
+proc newBall(r, x, y, dx, dy: float; bounce: bool, ddx, ddy = 0d; coeff = 1.0, isSquare = false) =
   var ent = world.addEntity (Size(r: r), Position(x: x, y: y), Velocity(dx: dx, dy: dy), Draw())
   echo "Add entity"
   if bounce:
@@ -98,13 +106,16 @@ proc newBall(r, x, y, dx, dy: float; bounce: bool, ddx, ddy = 0d; coeff = 1.0) =
     echo "Add Drag"
     world.addComponent(ent,  Drag(coefficient: coeff))
 
+  if isSquare:
+    world.addComponent(ent, Square())
+
 
 
 newBall(15.0, width / 2, height / 2, 1, 0.4, false, 0.3, 0.5)
 newBall(10.0, 20, 0, 4.0, 0.0, true, 0, 1)
 newBall(7.0, 180.0, 180.0, 5.0, 2.0, true, 0.3, 0.5)
 newBall(15.0, 50.0, 180.0, -2.0, 1.0, true, 0.0, -1)
-newBall(20.0, 240.0, 40.0, 15.0, 0.0, true, 0.0, -1, 0.99)
+newBall(20.0, 240.0, 40.0, 15.0, 0.0, true, 0.0, -1, 0.99, isSquare = true)
 
 
 run(int width, int height, draw, name = "ecs")

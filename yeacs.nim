@@ -13,18 +13,20 @@ type
   ComponentTuple* = concept ct, type CT
     onlyUniqueValues(CT)
     fromComponent(CT)
+  Not*[T] = object of Component
 
 proc onlyUniqueValues*(t: typedesc[tuple]): bool =
   result = true
-  for nameA, fieldA in default(t).fieldPairs:
-    for nameB, fieldB in default(t).fieldPairs:
+  let def = default(t)
+  for nameA, fieldA in def.fieldPairs:
+    for nameB, fieldB in def.fieldPairs:
       when nameA != nameB and fieldA is typeof(fieldB):
         return false
 
 proc fromComponent*(t: typedesc[tuple]): bool =
   result = true
   for x in default(t).fields:
-    if x isnot Component:
+    if x isnot (Component or Not):
       return false
 
 when isLowLevel:
@@ -68,14 +70,19 @@ template componentAddr*[T: Component](t: T): pointer =
     break
   thePtr
 
+proc getRequired(t: typedesc[ComponentTuple]): int =
+  var theTup = default(t)
+  for field in theTup.fields:
+    when field is Component and field isnot Not:
+      inc result
 
 proc typeCount*(archetype: ArchetypeBase): int =
   # Amount of components this archetype has
   archeType.types.len
 
-proc makeArchetype*(tup: typedesc[ComponentTuple]): Archetype[tup] =
+proc makeArchetype*[T](tup: typedesc[T]): Archetype[tup] =
   ## Generates an archetype based of a tuple.
-  const tupLen = tupleLen(tup)
+  const tupLen = getRequired(T)
   result =
     when isLowLevel:
       Archetype[tup](
@@ -122,7 +129,7 @@ proc len*(arch: ArchetypeBase): int =
 proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
   const
     typStr = $T
-    tupLen = tupleLen(T)
+    tupLen = getRequired(T)
   result = fmt"Archetype[{typStr}]("
   let len = arch.len
   for i in 0..<len:
@@ -148,22 +155,30 @@ proc getTheTypeInfo*(t: auto): TypeInfo =
   else:
     $typeof(t)
 
-iterator filterInd*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]): (int, ArchetypeBase) =
+proc getTheTypeInfo*[T](n: Not[T]): pointer =
+  var a = default(T)
+  getTheTypeInfo(a)
+
+iterator filterInd*[T](archetypes: openarray[ArchetypeBase], tup: typedesc[T]): (int, ArchetypeBase) =
   ## Iterates archetypes yielding all that can be converted to the tuple and the index.
   ## This means they share at least all components of `tup`
   var def: tup
-  const requiredCount = tupleLen(tup)
+  const requiredCount = getRequired(T)
   for i, arch in archetypes:
-    if arch.typeCount >= requiredCount:
-      var found = 0
-      for field in def.fields:
-        for i in 0..<arch.typeCount:
-          if arch.types[i] == field.getTheTypeInfo:
-            inc found
+    block search:
+      if arch.typeCount >= requiredCount:
+        var found = 0
+        for field in def.fields:
+          for i in 0..<arch.typeCount:
+            if arch.types[i] == field.getTheTypeInfo:
+              when field is Component:
+                inc found
+              elif field is Not:
+                # We found a not, this means we do not match here
+                break search
 
-
-      if found == requiredCount:
-        yield (i, arch)
+        if found == requiredCount:
+          yield (i, arch)
 
 iterator filter*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]): ArchetypeBase =
   ## Iterates archetypes yielding all that can be converted to the tuple.
@@ -302,21 +317,23 @@ when isLowLevel:
   macro generateAccess(arch: ArchetypeBase, ind: int, indArray: array, tup: ComponentTuple): untyped =
     result = nnkTupleConstr.newTree()
     for i, val in tup.getTypeImpl:
-      result.add:
-        genast(val, ind, indArray, tup, i):
-          let element = arch.data[ind * arch.stride + arch.componentOffset[indArray[i]]].addr
-          cast[ptr val](cast[int](element) - sizeof(pointer))
+      if val.kind != nnkBracketExpr or (val.kind == nnkBracketExpr and val[0] != bindSym"Not"):
+        result.add:
+          genast(val, ind, indArray, tup, i):
+            let element = arch.data[ind * arch.stride + arch.componentOffset[indArray[i]]].addr
+            cast[ptr val](cast[int](element) - sizeof(pointer))
 else:
   macro generateAccess(arch: ArchetypeBase, ind: int, indArray: array, tup: ComponentTuple): untyped =
     result = nnkTupleConstr.newTree()
     for i, val in tup.getTypeImpl:
-      result.add:
-        genast(val, ind, indArray, tup, i):
-          (ref val)(arch.data[ind * arch.typeCount + indArray[i]])
+      if val.kind != nnkBracketExpr or (val.kind == nnkBracketExpr and val[0] != bindSym"Not"):
+        result.add:
+          genast(val, ind, indArray, tup, i):
+            (ref val)(arch.data[ind * arch.typeCount + indArray[i]])
 
-iterator foreach*(arch: ArchetypeBase, tup: typedesc[ComponentTuple]): auto =
+iterator foreach*[T](arch: ArchetypeBase, tup: typedesc[T]): auto =
   var
-    indices: array[tupleLen(tup), int]
+    indices: array[getRequired(T), int]
     found = 0
     def: tup
 
@@ -326,13 +343,18 @@ iterator foreach*(arch: ArchetypeBase, tup: typedesc[ComponentTuple]): auto =
       break
 
     for i in 0..<arch.typeCount:
-      if arch.types[i] == field.getTheTypeInfo:
-        indices[found] = i
-        inc found
-        if found >= indices.len:
+      when field is Not:
+        if arch.types[i] == field.getTheTypeInfo:
+          found = 0
           break
+      else:
+        if arch.types[i] == field.getTheTypeInfo:
+          indices[found] = i
+          inc found
+          if found >= indices.len:
+            break
 
-  if found == tupleLen(tup):
+  if found == indices.len:
     for i in 0..<arch.len:
       yield arch.generateAccess(i, indices, def)
 
@@ -367,7 +389,7 @@ proc getArch*(world: World, T: typedesc[ComponentTuple]): Archetype[T] =
 
 
 proc addEntity*[T: ComponentTuple](world: var World, entity: sink T): Entity {.discardable.} =
-  const requiredCount = tupleLen(entity)
+  const requiredCount = getRequired(T)
   for archId, arch in world.archetypes:
     if entity.isApartOf(arch):
       Archetype[T](arch).add entity
