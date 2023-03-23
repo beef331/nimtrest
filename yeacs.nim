@@ -155,7 +155,7 @@ proc getTheTypeInfo*(t: auto): TypeInfo =
   else:
     $typeof(t)
 
-proc getTheTypeInfo*[T](n: Not[T]): pointer =
+proc getTheTypeInfo*[T](n: Not[T]): TypeInfo =
   var a = default(T)
   getTheTypeInfo(a)
 
@@ -278,8 +278,8 @@ when isLowLevel:
 else:
   proc removeEntity(arch: ArchetypeBase, entityId: int) =
     # This logic handles moving data around the old buffer
-    inc fromArch.generation
-    let fromIndex = entityId * fromArch.typeCount
+    inc arch.generation
+    let fromIndex = entityId * arch.typeCount
 
     for i in fromIndex .. arch.data.high - arch.typeCount:
       arch.data[i] = arch.data[i + arch.typeCount]
