@@ -72,27 +72,43 @@ proc drawBall(world: var World) =
   var drawGravityQuery {.global.}: QueryIndex[(Position, Draw, Size, Square)]
   fill(255, 255, 255, 255)
   for (pos, _, size) in world.query(drawQuery):
-    fill(255, 255, 255, 255)
     circleFill(pos.x, pos.y, size.r)
 
+  fill(255, 0, 0, 255)
   for (pos, _, size, _) in world.query(drawGravityQuery):
-    fill(255, 0, 0, 255)
     rectFill(pos.x, pos.y, size.r, size.r)
 
-var world = World()
-
+var 
+  world = World()
+  firstEnt: Entity
+  ticks = 0
 
 proc draw() =
   background(0)
+  case ticks
+  of 100:
+    world.addComponent(firstEnt, Square())
+  of 200:
+    world.removeComponent(firstEnt, Square)
+  of 300:
+    world.addComponent(firstEnt, Gravity(ddx: 0, ddy: 1))
+    world.removeComponent(firstEnt, Velocity)
+    world.addComponent(firstEnt, Velocity())
+  else: discard
+
   fill(255, 255, 255)
   bounceOnWalls(world)
   fall(world)
   airResistance(world)
   moveSystem(world)
   drawBall(world)
+  inc ticks
 
 proc newBall(r, x, y, dx, dy: float; bounce: bool, ddx, ddy = 0d; coeff = 1.0, isSquare = false) =
   var ent = world.addEntity (Size(r: r), Position(x: x, y: y), Velocity(dx: dx, dy: dy), Draw())
+  if firstEnt.isNil:
+    firstEnt = ent
+
   echo "Add entity"
   if bounce:
     echo "Add Bounce"

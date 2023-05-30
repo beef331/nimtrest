@@ -3,8 +3,7 @@ This is a not a sincere attempt at an ECS, more a sincere attempt at making an E
 That means yeacs uses a fair bit of runtime type information.
 ]##
 
-
-import std/[typetraits, macros, genasts, strformat, enumerate]
+import std/[typetraits, macros, genasts, strformat, enumerate, tables, hashes]
 
 const isLowLevel = not(defined(js) or defined(nimscript) or defined(useOOP))
 
@@ -35,6 +34,9 @@ else:
   type TypeInfo = string
 
 type
+  Entity* = ref object
+    archIndex, entIndex: int
+
   ArchetypeBase* = ref object of RootObj
     generation: int # Every time we move an entity or do something to cause an index to be invalidate we increment this, only have 2^64 changes so be careful
     when isLowLevel:
@@ -51,14 +53,13 @@ type
 
   World* = object
     archetypes*: seq[ArchetypeBase]
-
-  Entity* = object
-    archIndex, entIndex: int
-    generation: int # Used to ensure we do not have an outdated pointer
+    entityPointers: Table[ArchetypeBase, seq[Entity]]
 
   QueryIndex*[T: ComponentTuple] = object
     indices: seq[int]
     generation: int
+
+proc `hash`*(arch: ArchetypeBase): Hash = cast[Hash](arch)
 
 template realCompSize*[T: Component](_: T): int = max(sizeof(T) - sizeof(pointer), 1) # We do not need type information so this is used to remove it from size
 
@@ -270,7 +271,6 @@ when isLowLevel:
       if moved == fromArch.typeCount:
         break # Object fully moved we can exit the loop
 
-    assert moved == fromArch.typeCount
 
 
     fromArch.removeEntity(entityId)
@@ -393,16 +393,19 @@ proc addEntity*[T: ComponentTuple](world: var World, entity: sink T): Entity {.d
   for archId, arch in world.archetypes:
     if entity.isApartOf(arch):
       Archetype[T](arch).add entity
-      return Entity(archIndex: archId, entIndex: arch.len - 1, generation: arch.generation)
+      let ent = Entity(archIndex: archId, entIndex: arch.len - 1)
+      world.entityPointers[arch].add ent
+      return ent
   let newArch = makeArchetype typeof(entity)
   newArch.add entity
   world.archetypes.add newArch
-  result = Entity(archIndex: world.archeTypes.high, entIndex: newArch.len - 1, generation: newArch.generation)
+  let ent = Entity(archIndex: world.archeTypes.high, entIndex: newArch.len - 1)
+  world.entityPointers[ArchetypeBase newArch] = @[ent]
+  ent
 
 
-proc addComponent*[T: Component](world: var World, entity: var Entity, component: T) =
+proc addComponent*[T: Component](world: var World, entity: Entity, component: T) =
   let fromArch = world.archetypes[entity.archIndex]
-  assert entity.generation == fromArch.generation
 
   var
     thisCompTypeInfo = component.getTheTypeInfo
@@ -423,11 +426,18 @@ proc addComponent*[T: Component](world: var World, entity: var Entity, component
   if arch.isNil: # We dont have an arch that fits the type we need, make one
     arch = makeArchetype(neededComponents, world.archeTypes[entity.archIndex], component)
     ind = world.archetypes.len
+  else:
+    if arch in world.entityPointers:
+      for ent in world.entityPointers[arch]:
+        if ent.entIndex > entity.entIndex:
+          dec ent.entIndex
+
 
 
   fromArch.moveEntity(arch, entity.entIndex)
-  entity = Entity(archIndex: ind, entIndex: arch.len - 1, generation: arch.generation)
-
+  entity.archIndex = ind
+  entity.entIndex = arch.len - 1
+  
   for i, typ in arch.types: # We need to find where we have to copy this new component
     if thisCompTypeInfo == typ:
       when isLowLevel: # We need to copy the new component over to the type, the others already moved in `moveEntity`
@@ -444,11 +454,11 @@ proc addComponent*[T: Component](world: var World, entity: var Entity, component
   if not hasOldArch:
     world.archetypes.add arch
 
-proc removeComponent*[T: Component](world: var World, entity: var Entity, component: T) =
+proc removeComponent*[T: Component](world: var World, entity: var Entity, comp: typedesc[T]) =
   let fromArch = world.archetypes[entity.archIndex]
-  assert entity.generation == fromArch.generation
 
   var
+    component = default(comp)
     thisCompTypeInfo = component.getTheTypeInfo
     neededComponents = fromArch.types
 
@@ -472,7 +482,8 @@ proc removeComponent*[T: Component](world: var World, entity: var Entity, compon
 
 
     fromArch.moveEntity(arch, entity.entIndex)
-    entity = Entity(archIndex: ind, entIndex: arch.len - 1, generation: arch.generation)
+    entity.archIndex = ind
+    entity.entIndex = arch.len - 1
 
     if not hasOldArch:
       world.archetypes.add arch
