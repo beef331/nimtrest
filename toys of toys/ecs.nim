@@ -91,9 +91,12 @@ proc draw() =
   of 200:
     world.removeComponent(firstEnt, Square)
   of 300:
-    world.addComponent(firstEnt, Gravity(ddx: 0, ddy: 1))
-    world.removeComponent(firstEnt, Velocity)
-    world.addComponent(firstEnt, Velocity())
+    for (vel, gravy) in world.components(firstEnt, (Velocity, Gravity)):
+      vel.dx = 0
+      vel.dy = 10
+      gravy.ddx = -1
+      gravy.ddy = 0
+
   else: discard
   
   fill(255, 255, 255)

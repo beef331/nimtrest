@@ -5,8 +5,6 @@ That means yeacs uses a fair bit of runtime type information.
 
 import std/[typetraits, macros, genasts, strformat, enumerate, tables, hashes, sequtils]
 
-const isLowLevel = not(defined(js) or defined(nimscript) or defined(useOOP))
-
 type
   ComponentTuple* = concept ct, type CT
     onlyUniqueValues(CT)
@@ -20,10 +18,7 @@ proc onlyUniqueValues*(t: typedesc[tuple]): bool =
       when nameA != nameB and fieldA is typeof(fieldB):
         return false
 
-when isLowLevel:
-  type TypeInfo = pointer
-else:
-  type TypeInfo = string
+type TypeInfo = pointer
 
 type
   Entity* = ref object
@@ -31,14 +26,9 @@ type
 
   ArchetypeBase* = ref object of RootObj
     generation: int # Every time we move an entity or do something to cause an index to be invalidate we increment this, only have 2^64 changes so be careful
-    when isLowLevel:
-      types: seq[TypeInfo] # For low level we use the nim provided type information to query, this is scraped inside data
-      data: seq[seq[byte]] # type erased data collections, the RTTI is used to allocate/move these
-      len: int
-    else:
-      types: seq[TypeInfo] # For highlevel we use the type name for querying, this isnt smart but it works, dont be a tosser and reuse names
-      data*: seq[ref Component] # OOP solution for data, works even on JS!
-
+    types: seq[TypeInfo] # For low level we use the nim provided type information to query, this is scraped inside data
+    data: seq[seq[byte]] # type erased data collections, the RTTI is used to allocate/move these
+    len: int
 
   Archetype*[T: ComponentTuple] = ref object of ArchetypeBase
 
@@ -83,32 +73,22 @@ proc makeArchetype*[T](tup: typedesc[T]): Archetype[tup] =
   ## Generates an archetype based of a tuple.
   const tupLen = getRequired(T)
   result =
-    when isLowLevel:
-      Archetype[tup](
-        types: newSeqOfCap[pointer](tupLen),
-        data: newSeq[seq[byte]](tupLen)
-      )
-    else:
-      Archetype[tup](
-        types: newSeqOfCap[string](tupLen)
-      )
+    Archetype[tup](
+      types: newSeqOfCap[pointer](tupLen),
+      data: newSeq[seq[byte]](tupLen)
+    )
 
   let def = default(tup)
-  for i, field in enumerate def.fields:
+  for field in def.fields:
     result.types.add field.getTheTypeInfo
 
 
 proc makeArchetype[T](typeInfo: sink seq[TypeInfo], previous: ArchetypeBase, newType: T): ArchetypeBase =
   result =
-    when isLowLevel:
-      ArchetypeBase(
-        types: typeInfo,
-        data: newSeq[seq[byte]](previous.data.len + 1)
-      )
-    else:
-      ArchetypeBase(
-        types: typeInfo
-      )
+    ArchetypeBase(
+      types: typeInfo,
+      data: newSeq[seq[byte]](previous.data.len + 1)
+    )
 
 proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
   const
@@ -119,29 +99,23 @@ proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
   for i in 0..<len:
     let def = default T
     for ind, field in enumerate def.fields:
-      when isLowLevel:
-        let
-          startField = arch.data[ind][i * field.realCompSize()].addr
-          data =
-            when compiles(field of RootObj):
-              cast[pointer](cast[int](startField) - sizeof(pointer))
-            else:
-              pointer startField
-        copyMem(field.unsafeaddr, data, sizeof(field))
-        result.add $field
-      else:
-        result.add $(ref typeof(field))(arch.data[i + ind])[]
+      let
+        startField = arch.data[ind][i * field.realCompSize()].addr
+        data =
+          when compiles(field of RootObj):
+            cast[pointer](cast[int](startField) - sizeof(pointer))
+          else:
+            pointer startField
+      copyMem(field.unsafeaddr, data, sizeof(field))
+      result.add $field
+
       if ind < tupLen - 1:
         result.add ", "
     if i < len - 1:
       result.add ", "
   result.add ")"
 
-proc getTheTypeInfo*(t: auto): TypeInfo =
-  when isLowLevel:
-    t.getTypeInfo()
-  else:
-    $typeof(t)
+proc getTheTypeInfo*(t: auto): TypeInfo = t.getTypeInfo()
 
 proc getTheTypeInfo*[T](n: Not[T]): TypeInfo =
   var a = default(T)
@@ -161,7 +135,8 @@ iterator filterInd*[T](archetypes: openarray[ArchetypeBase], tup: typedesc[T]): 
             if arch.types[i] == field.getTheTypeInfo:
               when field is Not:
                 break search
-              inc found
+              else:
+                inc found
 
         if found == requiredCount:
           yield (i, arch)
@@ -194,121 +169,67 @@ proc filter*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]
   for x in filter(archeTypes, tup):
     result.add x
 
-when isLowLevel:
-  proc add*[T](arch: Archetype[T], tup: sink T) =
-    for field in tup.fields: # Iterate each component and copy it to `data`
-      let ind = block:
-        var val = -1
-        for i, typInfo in arch.types:
-          if typInfo == field.getTheTypeInfo():
-            val = i
-        val
-      assert ind >= 0
+proc add*[T](arch: Archetype[T], tup: sink T) =
+  for field in tup.fields: # Iterate each component and copy it to `data`
+    let ind = block:
+      var val = -1
+      for i, typInfo in arch.types:
+        if typInfo == field.getTheTypeInfo():
+          val = i
+      val
+    assert ind >= 0
 
-      const realSize = realCompSize(field) 
-      let startLen = arch.data[ind].len
-      arch.data[ind].setLen(arch.data[ind].len + realSize)
+    const realSize = realCompSize(field) 
+    let startLen = arch.data[ind].len
+    arch.data[ind].setLen(arch.data[ind].len + realSize)
 
-      let compAddr = componentAddr(field)
-      if compAddr != nil: # Only copy if we have a field
-        arch.data[ind][startLen].addr.copyMem(compAddr, realSize)
-    inc arch.len
-else:
-  proc add*[T](arch: Archetype[T], tup: sink T) =
-    for field in tup.fields: # OOP is simpler we just add it
-      let newComp = new typeof(field)
-      newComp[] = field
-      arch.data.add newComp
+    let compAddr = componentAddr(field)
+    if compAddr != nil: # Only copy if we have a field
+      arch.data[ind][startLen].addr.copyMem(compAddr, realSize)
+  inc arch.len
 
-when isLowLevel:
-  proc removeEntity(arch: ArchetypeBase, entityId: int) =
-    # This logic handles moving data around the old buffer
-    inc arch.generation # This invalidates any old Entity's, not the smartest but provents errors
-    for comp in arch.data.mitems:
-      if comp.len > 0:
-        let size = comp.len div arch.len
-        comp.delete(size * entityId .. size * (entityId + 1) - 1)
-    dec arch.len
+proc removeEntity(arch: ArchetypeBase, entityId: int) =
+  # This logic handles moving data around the old buffer
+  inc arch.generation
+  for comp in arch.data.mitems:
+    if comp.len > 0:
+      let size = comp.len div arch.len
+      comp.delete(size * entityId .. size * (entityId + 1) - 1)
+  dec arch.len
 
-  proc moveEntity(fromArch, toArch: ArchetypeBase, entityId: int) =
-    let toIndex = toArch.data.len
-    var moved = 0
-    for i, typA in toArch.types:
-      for j, typB in fromArch.types:
-        if typA == typB and fromArch.data[j].len > 0: # found a type we had that we need to copy over
-          let size = fromArch.data[j].len div fromArch.len
-          toArch.data[i].add fromArch.data[j].toOpenArray(entityId * size, (entityId + 1) * size - 1)
-          inc moved
-
-      if moved == fromArch.typeCount:
-        break # Object fully moved we can exit the loop
-
-    inc toArch.len
-    fromArch.removeEntity(entityId)
-
-else:
-  proc removeEntity(arch: ArchetypeBase, entityId: int) =
-    # This logic handles moving data around the old buffer
-    inc arch.generation
-    let fromIndex = entityId * arch.typeCount
-
-    for i in fromIndex .. arch.data.high - arch.typeCount:
-      arch.data[i] = arch.data[i + arch.typeCount]
-    arch.data.setLen(arch.data.len - arch.typeCount)
-
-  proc moveEntity(fromArch, toArch: ArchetypeBase, entityId: int) =
-    # Need to copy fromArch to toArch then shrink fromArch
-    # This is tricky cause component order matters
-    let toIndex = toArch.data.len
-    toArch.data.setLen(toIndex + toArch.typeCount)
-    let fromIndex = entityId * fromArch.typeCount
-    var moved = 0
-
-    for i, typA in toArch.types:
-      block addTyp:
-        for j, typB in fromArch.types:
-          if typA == typB:
-            toArch.data[toIndex + i] = fromArch.data[fromIndex + j]
-            inc moved
-            break addTyp
-
-      if moved == fromArch.typeCount:
+proc moveEntity(fromArch, toArch: ArchetypeBase, entityId: int) =
+  var moved = 0
+  for i, typA in toArch.types:
+    for j, typB in fromArch.types:
+      if typA == typB: # found a type we had that we need to copy over
+        let size = fromArch.data[j].len div fromArch.len
+        toArch.data[i].add fromArch.data[j].toOpenArray(entityId * size, (entityId + 1) * size - 1)
+        inc moved
         break
 
-    assert moved == fromArch.typeCount
+    if moved == fromArch.typeCount:
+      break # Object fully moved we can exit the loop
 
-    inc fromArch.generation
+  assert moved == min(fromArch.typeCount, toArch.typeCount())
 
-    for i in fromIndex .. fromArch.data.high - fromArch.typeCount:
-      fromArch.data[i] = fromArch.data[i + fromArch.typeCount]
-    fromArch.data.setLen(fromArch.data.len - fromArch.typeCount)
+  inc toArch.len
+  fromArch.removeEntity(entityId)
 
-
-when isLowLevel:
-  macro generateAccess(arch: ArchetypeBase, ind: int, indArray: array, tup: ComponentTuple): untyped =
-    result = nnkTupleConstr.newTree()
-    for i, val in tup.getTypeImpl:
-      if val.kind != nnkBracketExpr or (val.kind == nnkBracketExpr and val[0] != bindSym"Not"):
-        result.add:
-          genast(val, ind, indArray, tup, i):
-            if arch.data[indArray[i]].len == 0:
-              nil
+macro generateAccess(arch: ArchetypeBase, ind: int, indArray: array, tup: ComponentTuple): untyped =
+  result = nnkTupleConstr.newTree()
+  for i, val in tup.getTypeImpl:
+    if val.kind != nnkBracketExpr or (val.kind == nnkBracketExpr and val[0] != bindSym"Not"):
+      result.add:
+        genast(val, ind, indArray, tup, i):
+          if arch.data[indArray[i]].len == 0:
+            nil
+          else:
+            let size = arch.data[indArray[i]].len div arch.len 
+            let element = arch.data[indArray[i]][size * ind].addr
+            when compiles(default(val) of RootObj):
+              cast[ptr val](cast[int](element) - sizeof(pointer))
             else:
-              let size = arch.data[indArray[i]].len div arch.len 
-              let element = arch.data[indArray[i]][size * ind].addr
-              when compiles(default(val) of RootObj):
-                cast[ptr val](cast[int](element) - sizeof(pointer))
-              else:
-                cast[ptr val](element)
-
-else:
-  macro generateAccess(arch: ArchetypeBase, ind: int, indArray: array, tup: ComponentTuple): untyped =
-    result = nnkTupleConstr.newTree()
-    for i, val in tup.getTypeImpl:
-      if val.kind != nnkBracketExpr or (val.kind == nnkBracketExpr and val[0] != bindSym"Not"):
-        result.add:
-          genast(val, ind, indArray, tup, i):
-            (ref val)(arch.data[ind * arch.typeCount + indArray[i]])
+              cast[ptr val](element)
 
 iterator foreach*[T](arch: ArchetypeBase, tup: typedesc[T]): auto = # Todo make (var X, var Y, var Z, ...)
   var
@@ -366,7 +287,6 @@ proc getArch*(world: World, T: typedesc[ComponentTuple]): Archetype[T] =
     if def.isApartOf(arch):
       return Archetype[T](arch)
 
-
 proc addEntity*[T: ComponentTuple](world: var World, entity: sink T): Entity {.discardable.} =
   const requiredCount = getRequired(T)
   for archId, arch in world.archetypes:
@@ -381,6 +301,53 @@ proc addEntity*[T: ComponentTuple](world: var World, entity: sink T): Entity {.d
   let ent = Entity(archIndex: world.archeTypes.high, entIndex: newArch.len - 1)
   world.entityPointers[ArchetypeBase newArch] = @[ent]
   ent
+
+iterator component*[T: not tuple](world: var World, entity: Entity, _: typedesc[T]): var T =
+  let 
+    arch = world.archetypes[entity.archIndex]
+    val = default(T)
+    typInfo = val.getTheTypeInfo()
+    ind = block:
+      var val = -1
+      for i, typ in arch.types:
+        if typ == typInfo:
+          val = i
+          break
+      val
+    size = arch.data[ind].len div arch.len
+    theAddr = arch.data[ind][size * entity.entIndex].addr
+  yield cast[ptr T](theAddr)[]
+
+iterator components*[T: tuple](world: var World, entity: Entity, _: typedesc[T]): auto =
+  var
+    indices: array[getRequired(T), int]
+    found = 0
+    def: T
+    arch = world.archetypes[entity.archIndex]
+
+  for field in def.fields:
+
+    if found >= indices.len:
+      break
+
+    for i in 0..<arch.typeCount:
+      when field is Not:
+        if arch.types[i] == field.getTheTypeInfo:
+          found = 0
+          break
+      else:
+        if arch.types[i] == field.getTheTypeInfo:
+          indices[found] = i
+          inc found
+          if found >= indices.len:
+            break
+
+  if found == indices.len:
+    for i in 0..<arch.len:
+      yield arch.generateAccess(i, indices, def)
+
+
+  
 
 
 proc addComponent*[T](world: var World, entity: Entity, component: T) =
@@ -411,24 +378,17 @@ proc addComponent*[T](world: var World, entity: Entity, component: T) =
         if ent.entIndex > entity.entIndex:
           dec ent.entIndex
 
-
-
   fromArch.moveEntity(arch, entity.entIndex)
   entity.archIndex = ind
   entity.entIndex = arch.len - 1
   
   for i, typ in arch.types: # We need to find where we have to copy this new component
     if thisCompTypeInfo == typ:
-      when isLowLevel: # We need to copy the new component over to the type, the others already moved in `moveEntity`
-        let compAddr = componentAddr(component)
-        if compAddr != nil:
-          const size = realCompSize(component)
-          arch.data[i].setLen(arch.data[i].len + size)
-          arch.data[i][^(size)].addr.copyMem(compAddr, size)
-      else:
-        let newComp = (ref T)()
-        newComp[] = component
-        arch.data[entity.entIndex * arch.typeCount + i] = newComp
+      let compAddr = componentAddr(component)
+      if compAddr != nil:
+        const size = realCompSize(component)
+        arch.data[i].setLen(arch.data[i].len + size)
+        arch.data[i][^size].addr.copyMem(compAddr, size)
       break
 
   if not hasOldArch:
@@ -471,7 +431,6 @@ proc removeComponent*[T](world: var World, entity: var Entity, comp: typedesc[T]
   else:
     fromArch.removeEntity(entity.entIndex)
 
-
 iterator query*[T](world: var World, query: var QueryIndex[T]): auto =
   if world.archetypes.len != query.generation:
     for i, _ in filterInd(world.archetypes.toOpenArray(query.generation, world.archetypes.high), T):
@@ -481,9 +440,6 @@ iterator query*[T](world: var World, query: var QueryIndex[T]): auto =
   for queryInd in query.indices:
     for ent in world.archetypes[queryInd].foreach(T):
       yield ent
-
-
-
 
 when isMainModule:
   type
