@@ -77,3 +77,23 @@ of 0..30:
   static: echo "Hello"
 of 3, 4, 5:
   static: echo "Hmm"
+
+template getType(i: static int): auto =
+  staticCase i:
+  of 8:
+    uint8
+  of 16:
+    uint16
+  of 32:
+    uint32
+  of 64:
+    uint64
+  else:
+   {.error: "Whatchu want".}
+static: 
+  assert getType(8) is uint8
+  assert getType(16) is uint16
+  assert getType(32) is uint32
+  assert getType(64) is uint64
+  assert not compiles(getType(1))
+var d = default getType(8)

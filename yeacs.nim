@@ -8,11 +8,9 @@ import std/[typetraits, macros, genasts, strformat, enumerate, tables, hashes]
 const isLowLevel = not(defined(js) or defined(nimscript) or defined(useOOP))
 
 type
-  Component* = object of RootObj
   ComponentTuple* = concept ct, type CT
     onlyUniqueValues(CT)
-    fromComponent(CT)
-  Not*[T] = object of Component
+  Not*[T] = distinct T
 
 proc onlyUniqueValues*(t: typedesc[tuple]): bool =
   result = true
@@ -21,12 +19,6 @@ proc onlyUniqueValues*(t: typedesc[tuple]): bool =
     for nameB, fieldB in def.fieldPairs:
       when nameA != nameB and fieldA is typeof(fieldB):
         return false
-
-proc fromComponent*(t: typedesc[tuple]): bool =
-  result = true
-  for x in default(t).fields:
-    if x isnot (Component or Not):
-      return false
 
 when isLowLevel:
   type TypeInfo = pointer
@@ -61,20 +53,27 @@ type
 
 proc `hash`*(arch: ArchetypeBase): Hash = cast[Hash](arch)
 
-template realCompSize*[T: Component](_: T): int = max(sizeof(T) - sizeof(pointer), 1) # We do not need type information so this is used to remove it from size
+template realCompSize*[T](val: T): int =
+  when compiles(val of RootObj):
+    max(sizeof(T) - sizeof(pointer), 1) # We do not need type information so this is used to remove it from size
+  else:
+    max(sizeof(T), 1)
 
-template componentAddr*[T: Component](t: T): pointer =
+template componentAddr*[T](t: T): pointer =
   ## Returns the address to the first field, or nothing if the object is field-less
   var thePtr: pointer
-  for field in t.fields:
-    thePtr = field.unsafeaddr
-    break
+  when compiles((for x in t.fields: discard)):
+    for field in t.fields:
+      thePtr = field.unsafeaddr
+      break
+  else:
+    thePtr = t.unsafeAddr
   thePtr
 
 proc getRequired(t: typedesc[ComponentTuple]): int =
   var theTup = default(t)
   for field in theTup.fields:
-    when field is Component and field isnot Not:
+    when field isnot Not:
       inc result
 
 proc typeCount*(archetype: ArchetypeBase): int =
@@ -105,7 +104,7 @@ proc makeArchetype*[T](tup: typedesc[T]): Archetype[tup] =
       result.stride = offset
 
 
-proc makeArchetype[T: Component](typeInfo: sink seq[TypeInfo], previous: ArchetypeBase, newType: T): ArchetypeBase =
+proc makeArchetype[T](typeInfo: sink seq[TypeInfo], previous: ArchetypeBase, newType: T): ArchetypeBase =
   result =
     when isLowLevel:
       ArchetypeBase(
@@ -172,11 +171,9 @@ iterator filterInd*[T](archetypes: openarray[ArchetypeBase], tup: typedesc[T]): 
         for field in def.fields:
           for i in 0..<arch.typeCount:
             if arch.types[i] == field.getTheTypeInfo:
-              when field is Component:
-                inc found
-              elif field is Not:
-                # We found a not, this means we do not match here
+              when field is Not:
                 break search
+              inc found
 
         if found == requiredCount:
           yield (i, arch)
@@ -218,7 +215,7 @@ when isLowLevel:
       const realSize = realCompSize(field) # Dont need type information, but need atleast 1 byte(ugh yes)
       let startLen = arch.data.len
       arch.data.setLen(arch.data.len + realSize)
-      assert realSize == max(sizeof(field) - sizeof(pointer), 1)
+
       let compAddr = componentAddr(field)
       if compAddr != nil: # Only copy if we have a field
         arch.data[startLen].addr.copyMem(componentAddr(field), realSize)
@@ -321,7 +318,11 @@ when isLowLevel:
         result.add:
           genast(val, ind, indArray, tup, i):
             let element = arch.data[ind * arch.stride + arch.componentOffset[indArray[i]]].addr
-            cast[ptr val](cast[int](element) - sizeof(pointer))
+            when compiles(default(val) of RootObj):
+              cast[ptr val](cast[int](element) - sizeof(pointer))
+            else:
+              cast[ptr val](element)
+
 else:
   macro generateAccess(arch: ArchetypeBase, ind: int, indArray: array, tup: ComponentTuple): untyped =
     result = nnkTupleConstr.newTree()
@@ -404,7 +405,7 @@ proc addEntity*[T: ComponentTuple](world: var World, entity: sink T): Entity {.d
   ent
 
 
-proc addComponent*[T: Component](world: var World, entity: Entity, component: T) =
+proc addComponent*[T](world: var World, entity: Entity, component: T) =
   let fromArch = world.archetypes[entity.archIndex]
 
   var
@@ -454,7 +455,7 @@ proc addComponent*[T: Component](world: var World, entity: Entity, component: T)
   if not hasOldArch:
     world.archetypes.add arch
 
-proc removeComponent*[T: Component](world: var World, entity: var Entity, comp: typedesc[T]) =
+proc removeComponent*[T](world: var World, entity: var Entity, comp: typedesc[T]) =
   let fromArch = world.archetypes[entity.archIndex]
 
   var
@@ -507,9 +508,9 @@ iterator query*[T](world: var World, query: var QueryIndex[T]): auto =
 
 when isMainModule:
   type
-    Position = object of Component
+    Position = object
       x, y, z: float32
-    Health = object of Component
+    Health = object
       current, max: int32
 
   var world = World()

@@ -7,29 +7,29 @@ let
   height = 360.0
 
 type
-  Size = object of Component
+  Size = object
     r: float
 
-  Position = object of Component
+  Position = object
     x: float
     y: float
 
-  Velocity = object of Component
+  Velocity = object
     dx: float
     dy: float
 
-  Bounce = object of Component
+  Bounce = object
 
-  Gravity = object of Component
+  Gravity = object
     ddx: float
     ddy: float
 
-  Drag = object of Component
+  Drag = object
     coefficient: float
 
-  Draw = object of Component
+  Draw = object
 
-  Square = object of Component
+  Square = object
 
 proc moveSystem(world: var World) =
   for (pos, vel, size) in world.foreach (Position, Velocity, Size):
@@ -95,7 +95,7 @@ proc draw() =
     world.removeComponent(firstEnt, Velocity)
     world.addComponent(firstEnt, Velocity())
   else: discard
-
+  
   fill(255, 255, 255)
   bounceOnWalls(world)
   fall(world)
@@ -104,7 +104,7 @@ proc draw() =
   drawBall(world)
   inc ticks
 
-proc newBall(r, x, y, dx, dy: float; bounce: bool, ddx, ddy = 0d; coeff = 1.0, isSquare = false) =
+proc newBall(r, x, y, dx, dy: float; bounce: bool; ddx, ddy = 0d; coeff = 1.0; isSquare = false) =
   var ent = world.addEntity (Size(r: r), Position(x: x, y: y), Velocity(dx: dx, dy: dy), Draw())
   if firstEnt.isNil:
     firstEnt = ent
@@ -124,6 +124,7 @@ proc newBall(r, x, y, dx, dy: float; bounce: bool, ddx, ddy = 0d; coeff = 1.0, i
 
   if isSquare:
     world.addComponent(ent, Square())
+  world.addComponent(ent, true)
 
 
 
