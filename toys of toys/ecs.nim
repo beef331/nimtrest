@@ -93,8 +93,8 @@ proc draw() =
   of 300:
     for (vel, gravy) in world.components(firstEnt, (Velocity, Gravity)):
       vel.dx = 0
-      vel.dy = 10
-      gravy.ddx = -1
+      vel.dy = 1
+      gravy.ddx = -0.1
       gravy.ddy = 0
 
   else: discard
