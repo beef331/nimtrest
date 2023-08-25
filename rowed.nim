@@ -1,48 +1,90 @@
-import std/[macros, macrocache, algorithm, strutils]
+import std/[macros, macrocache, genasts, typetraits]
 
-template isRowed*{.pragma.}
+const 
+  rowTable = CacheTable"rowTable" # store concept names
 
-proc isRowType(t: typedesc): bool = t.hasCustomPragma(isRowed)
+type NamedTuple = concept type T
+  isNamedTuple(T)
 
-type Rowed* = concept type R
-  isRowType(R)
-
-const rowTable = CacheTable"RowTable"
-
-proc sortedDef(tup: NimNode): (NimNode, int) =
-  ## Returns the sorted def and the count of generic parameters
-  var fieldNames: seq[NimNode]
-  for def in tup:
-    for i in 0 .. def.len - 3:
-      fieldNames.add nnkTupleConstr.newTree(def[i], def[^2])
-
-  result[0] = newStmtList(fieldNames.sortedByIt($it[0]))
-
-
-macro row*(p: typed): untyped =
-  var (def, generics) = default (NimNode, int)
-  let newProc = p.copyNimTree()
-  for i, param in p.params.pairs:
-    if i > 0 and param[^2].kind == nnkTupleTy:
-      (def, generics) = sortedDef(param[^2])
-      break # we got our first row. replace tuple with emitted concept
-
+macro row*(body: typedesc[NamedTuple]): untyped =
   let 
-    name = $p[0]
-  newProc[0] = genSym(nskProc, name)
+    bodyRepr = body.repr
+    rowName = genSym(nskType, bodyRepr)
+    varName = ident"row"
+ 
+  if bodyRepr in rowTable:
+    result = rowTable[bodyRepr]
+  else:
+    rowTable[body.repr] = rowName
+    let typBody = newStmtList()
+    for idef in body:
+      for name in idef[0..^3]:
+        typBody.add infix(nnkDotExpr.newTree(varName, name), "is", idef[^2])
 
-  if name notin rowTable:
-    rowTable[name] = newStmtList()
-  rowTable[name].add nnkTupleConstr.newTree(def, newProc)
-  result = newProc
-  echo result.repr
+    result = genast(rowName, varName, body = typBody):
+      type rowName = concept varname
+        body
+      rowName
+
+macro join*(toJoin: varargs[typed], body: untyped): untyped =
+  var toAddFields: seq[NimNode]
+
+  for joiner in toJoin:
+    case joiner.kind
+    of nnkSym:
+      var impl = joiner.getImpl()
+      if impl == nil:
+        error("No AST found, did you declare this type in the same block?", joiner)
+
+      if impl[^1].kind == nnkRefTy:
+        impl = impl[^1]
+
+      case impl[^1].kind
+      of nnkObjectTy:
+        for field in impl[^1][^1]:
+          case field.kind
+          of nnkRecCase:
+            error("This macro does not handle variant objects.", joiner)
+          of nnkIdentDefs:
+            toAddFields.add field
+          else:
+            error("Unexpected AST for joiner macro: ", field)
+
+      of nnkTupleTy:
+        for field in impl[^1]:
+          toAddFields.add field
+
+      else:
+        error("Expected object or tuple definition.", joiner)
+    of nnkTupleTy:
+      echo joiner.repr
+    else:
+      error("Expected tuple or non generic object", joiner)
+
+  result = body
+  let obj = 
+    if result[^1].kind == nnkRefTy:
+      result[^1][^1]
+    else:
+      result[^1]
+  if obj[^1].kind != nnkRecList:
+    obj[^1] = nnkRecList.newTree(toAddFields)
+  else:
+    for i, x in toAddFields:
+      obj[^1].insert i, x
+
+proc doThing(r: row tuple[x, y: int]) = echo r
+
+doThing (x: 100, y: 200)
 
 
-proc doThing(a: tuple[x, y: int]) {.row.} = echo "dual"
-proc doThing(a: tuple[x, y, z: int]) {.row.} = echo "tri"
+type 
+  MyTuple = tuple[x: int]
+  MyObj = ref object
+    y: int
 
+type
+  MyType {.join(MyTuple, MyObj).} = object
+    z: int
 
-type MyType {.isRowed.} = object
-  x, y: int
-
-static: assert MyType is Rowed
+doThing MyType(x: 3, y: 40, z: 100)
