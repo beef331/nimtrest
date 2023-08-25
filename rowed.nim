@@ -6,7 +6,7 @@ const
 type NamedTuple = concept type T
   isNamedTuple(T)
 
-macro row*(body: typedesc[NamedTuple]): untyped =
+macro row(body: typedesc[NamedTuple]): untyped =
   let 
     bodyRepr = body.repr
     rowName = genSym(nskType, bodyRepr)
@@ -75,6 +75,9 @@ macro join*(toJoin: varargs[typed], body: untyped): untyped =
 
 proc doThing(r: row tuple[x, y: int]) = echo r
 
+proc tryGeneric(r: row tuple[x, y: not void]) = # How we generically dispatch
+  echo r.x, " ", r.y
+
 doThing (x: 100, y: 200)
 
 
@@ -88,3 +91,5 @@ type
     z: int
 
 doThing MyType(x: 3, y: 40, z: 100)
+
+tryGeneric MyType(x: 3, y: 40, z: 100)
