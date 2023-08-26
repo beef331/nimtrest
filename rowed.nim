@@ -1,4 +1,4 @@
-import std/[macros, macrocache, genasts, typetraits]
+import std/[macros, macrocache, genasts, typetraits, sets]
 
 const 
   rowTable = CacheTable"rowTable" # store concept names
@@ -6,17 +6,32 @@ const
 type NamedTuple = concept type T
   isNamedTuple(T)
 
+proc hasIdent(n: NimNode): bool =
+  if n.kind == nnkIdent:
+    return
+  for x in n:
+    result = result or hasIdent(x)
+    if result:
+      break
+
+proc isGenericTuple(n: NimNode): bool =
+  result = false
+  for idef in n:
+    if idef[^2].hasIdent:
+      return true
+
 macro row(body: typedesc[NamedTuple]): untyped =
   let 
     bodyRepr = body.repr
-    rowName = genSym(nskType, bodyRepr)
+    rowName = genSym(nskType, "Row")
     varName = ident"row"
- 
-  if bodyRepr in rowTable:
+
+  if bodyRepr in rowTable and not body.isGenericTuple():
     result = rowTable[bodyRepr]
   else:
     rowTable[body.repr] = rowName
     let typBody = newStmtList()
+
     for idef in body:
       for name in idef[0..^3]:
         typBody.add infix(nnkDotExpr.newTree(varName, name), "is", idef[^2])
@@ -75,8 +90,12 @@ macro join*(toJoin: varargs[typed], body: untyped): untyped =
 
 proc doThing(r: row tuple[x, y: int]) = echo r
 
-proc tryGeneric(r: row tuple[x, y: not void]) = # How we generically dispatch
-  echo r.x, " ", r.y
+type 
+  MyRow[T] = row tuple[x, y: T] # Due to macro evaluation order this alias is required (it injects a `T`)
+
+
+proc tryGeneric[T](r: MyRow[T], a: T) =
+  echo r.x, " ", r.y, " ", a
 
 doThing (x: 100, y: 200)
 
@@ -92,4 +111,7 @@ type
 
 doThing MyType(x: 3, y: 40, z: 100)
 
-tryGeneric MyType(x: 3, y: 40, z: 100)
+tryGeneric MyType(x: 3, y: 40, z: 100), 300
+
+tryGeneric (x: "hmm", y: "huh"), "wazahhh"
+
