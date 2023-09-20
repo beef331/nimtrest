@@ -255,6 +255,8 @@ macro join*(toJoin: varargs[typed], body: untyped): untyped =
       obj[^1].insert i, x
 
 proc doThing(r: row tuple[x, y: int]) = echo r
+proc otherThing(r: row tuple[x: int]) = echo "Hmm"
+
 
 type 
   MyRow[T] = row tuple[x, y: T] # Due to macro evaluation order this alias is required (it injects a `T`)
@@ -288,4 +290,4 @@ a = rowed(MyTuple, (x: 100))
 assert a.x == 100
 a.x = 300
 assert a.x == 300
-
+otherThing a
