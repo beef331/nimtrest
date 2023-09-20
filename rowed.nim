@@ -77,7 +77,12 @@ proc isGenericTuple(n: NimNode): bool =
     if idef[^2].hasIdent:
       return true
 
-macro row(body: typedesc[NamedTuple]): untyped =
+macro skipAliases(t: typed): untyped =
+  result = t
+  while result.kind == nnkSym:
+    result = result.getImpl[^1]
+
+macro rowImpl(body: typedesc[NamedTuple]): untyped =
   let 
     body =
       if body.kind == nnkSym:
@@ -103,12 +108,14 @@ macro row(body: typedesc[NamedTuple]): untyped =
         body
       rowName
 
+template row*(typ: typedesc[NamedTuple]): untyped =
+  rowImpl skipAliases(typ)
+
 type Rowed[T: static string] = object
   id: int
   data: pointer
 
-
-macro rowed*(body: typedesc[NamedTuple]): untyped =
+macro rowedImpl(body: typedesc[NamedTuple]): untyped =
   let
     bodyRepr = body.repr
     rowName = genSym(nskType, "Row")
@@ -118,6 +125,9 @@ macro rowed*(body: typedesc[NamedTuple]): untyped =
     let vtable = genSym(nskVar, bodyRepr & "vTable")
     rowedTable[bodyRepr] = newStmtList(body, vtable)
     result = nnkBracketExpr.newTree(bindSym"Rowed", newLit bodyRepr)
+
+template rowed*(typ: typedesc[NamedTuple]): untyped =
+  rowedImpl(skipAliases(typ))
 
 macro rowedImpl(theRow: typedesc, val: typed): untyped =
   let 
@@ -158,7 +168,7 @@ macro rowedImpl(theRow: typedesc, val: typed): untyped =
     for field, fieldTyp in rowData.fields:
       result.insert insertOffset:
         genast(rowTyp, field, fieldTyp, typ = val.getTypeInst, vtable = rowData.vtable):
-          vtable.add cast[pointer](proc(r: rowTyp): fieldTyp =
+          vtable.add cast[pointer](proc(r: rowTyp): var fieldTyp =
             cast[ptr typ](r.data).field
           )
 
@@ -170,13 +180,22 @@ macro `.`*[T](rowed: Rowed[T], name: untyped): untyped =
     (offset, typ) = rowData.vtableProcOffsetTyp(name)
 
   result = genast(rowed, offset, typ, vtable = rowData.vtable, procCount = rowData.fieldCount):
-    cast[proc(r: typeof(rowed)): typ {.nimcall.}](vtable[offset + (rowed.id * procCount)])(rowed)
-  
+    let val = cast[proc(r: typeof(rowed)): var typ {.nimcall.}](vtable[offset + (rowed.id * procCount)])(rowed)
+    val
 
-macro skipAliases(t: typed): untyped =
-  result = t
-  while result.kind == nnkSym:
-    result = result.getImpl[^1]
+macro `.`*[T](rowed: var Rowed[T], name: untyped): untyped =
+  let 
+    rowData = RowedTable rowedTable[$T]
+    (offset, typ) = rowData.vtableProcOffsetTyp(name)
+
+  result = genast(rowed, offset, typ, vtable = rowData.vtable, procCount = rowData.fieldCount):
+    cast[proc(r: typeof(rowed)): var typ {.nimcall.}](vtable[offset + (rowed.id * procCount)])(rowed)
+
+
+macro `.=`*[T](rowed: var Rowed[T], name: untyped, val: typed): untyped =
+  result = genast(rowed, name, val):
+    (rowed.name) = val
+
 
 template rowed*(typ: typedesc[NamedTuple], val: typed): untyped =
   var temp = default(rowed(skipAliases(typ)))
@@ -262,6 +281,11 @@ tryGeneric MyType(x: 3, y: 40, z: 100), 300
 tryGeneric (x: "hmm", y: "huh"), "wazahhh"
 
 var a = rowed(MyTuple, MyType(x: 300))
-echo a.x
+assert a.x == 300
+a.x = 400
+assert a.x == 400
 a = rowed(MyTuple, (x: 100))
-echo a.x
+assert a.x == 100
+a.x = 300
+assert a.x == 300
+
