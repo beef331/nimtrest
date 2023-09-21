@@ -43,6 +43,7 @@ type
 proc `hash`*(arch: ArchetypeBase): Hash = cast[Hash](arch)
 
 template realCompSize*[T](val: T): int =
+  ## Returns the component size - type information to reduce unused data
   when compiles(val of RootObj):
     sizeof(T) - sizeof(pointer)
   else:
@@ -60,6 +61,8 @@ template componentAddr*[T](t: T): pointer =
   thePtr
 
 proc getRequired(t: typedesc[ComponentTuple]): int =
+  ## Returns required component count
+  ## This is the count minus the `Not` count
   var theTup = default(t)
   for field in theTup.fields:
     when field isnot Not:
@@ -227,7 +230,7 @@ macro generateAccess(arch: ArchetypeBase, ind: int, indArray: array, tup: Compon
             let size = arch.data[indArray[i]].len div arch.len 
             let element = arch.data[indArray[i]][size * ind].addr
             when compiles(default(val) of RootObj):
-              cast[ptr val](cast[int](element) - sizeof(pointer))
+              cast[ptr val](cast[int](element) - sizeof(pointer)) # Actual fields starts at addr + pointer, offset so fields are in proper location
             else:
               cast[ptr val](element)
 
@@ -237,18 +240,18 @@ iterator foreach*[T](arch: ArchetypeBase, tup: typedesc[T]): auto = # Todo make 
     found = 0
     def: tup
 
-  for field in def.fields:
+  for field in def.fields: # Search for the indices in this object
 
-    if found >= indices.len:
+    if found >= indices.len: # Found all fields we can leave
       break
 
     for i in 0..<arch.typeCount:
       when field is Not:
-        if arch.types[i] == field.getTheTypeInfo:
+        if arch.types[i] == field.getTheTypeInfo: # We hit on a `Not` exiting
           found = 0
           break
       else:
-        if arch.types[i] == field.getTheTypeInfo:
+        if arch.types[i] == field.getTheTypeInfo: # We found a proper field
           indices[found] = i
           inc found
           if found >= indices.len:
@@ -274,6 +277,7 @@ iterator foreach*(world: World, t: typedesc[ComponentTuple]): auto =
       yield ent
 
 proc isApartOf*[T: ComponentTuple](entity: T, arch: ArchetypeBase): bool =
+  ## Is this component tuple exactly this `arch`
   if tupleLen(T) == arch.typeCount:
     for i, field in enumerate entity.fields:
       if arch.types[i] != field.getTheTypeInfo():
@@ -289,13 +293,15 @@ proc getArch*(world: World, T: typedesc[ComponentTuple]): Archetype[T] =
 
 proc addEntity*[T: ComponentTuple](world: var World, entity: sink T): Entity {.discardable.} =
   const requiredCount = getRequired(T)
+
   for archId, arch in world.archetypes:
-    if entity.isApartOf(arch):
+    if entity.isApartOf(arch): # We found an arch, we can just add an entity and return it
       Archetype[T](arch).add entity
       let ent = Entity(archIndex: archId, entIndex: arch.len - 1)
       world.entityPointers[arch].add ent
       return ent
-  let newArch = makeArchetype typeof(entity)
+
+  let newArch = makeArchetype typeof(entity) # No arch found, we need to make a new one then return an ent in it
   newArch.add entity
   world.archetypes.add newArch
   let ent = Entity(archIndex: world.archeTypes.high, entIndex: newArch.len - 1)
@@ -303,6 +309,7 @@ proc addEntity*[T: ComponentTuple](world: var World, entity: sink T): Entity {.d
   ent
 
 iterator component*[T: not tuple](world: var World, entity: Entity, _: typedesc[T]): var T =
+  ## Return a mutable reference to a component from the entity
   let 
     arch = world.archetypes[entity.archIndex]
     val = default(T)
@@ -319,13 +326,14 @@ iterator component*[T: not tuple](world: var World, entity: Entity, _: typedesc[
   yield cast[ptr T](theAddr)[]
 
 iterator components*[T: tuple](world: var World, entity: Entity, _: typedesc[T]): auto =
+  ## Access the mutagle fields directly on an entity
   var
     indices: array[getRequired(T), int]
     found = 0
     def: T
     arch = world.archetypes[entity.archIndex]
 
-  for field in def.fields:
+  for field in def.fields: # Our tuples our order invariant, we need to find the (int, float) -> (float, int) transformation
 
     if found >= indices.len:
       break
@@ -345,10 +353,6 @@ iterator components*[T: tuple](world: var World, entity: Entity, _: typedesc[T])
   if found == indices.len:
     for i in 0..<arch.len:
       yield arch.generateAccess(i, indices, def)
-
-
-  
-
 
 proc addComponent*[T](world: var World, entity: Entity, component: T) =
   let fromArch = world.archetypes[entity.archIndex]
@@ -405,7 +409,7 @@ proc removeComponent*[T](world: var World, entity: var Entity, comp: typedesc[T]
   if (let foundIndex = neededComponents.find(thisCompTypeInfo); foundIndex > 0):
     neededComponents.delete(foundIndex)
 
-  if neededComponents.len > 0:
+  if neededComponents.len > 0: # We still have components, we need to move this entity
     var
       arch: ArchetypeBase
       ind = 0
@@ -432,6 +436,8 @@ proc removeComponent*[T](world: var World, entity: var Entity, comp: typedesc[T]
     fromArch.removeEntity(entity.entIndex)
 
 iterator query*[T](world: var World, query: var QueryIndex[T]): auto =
+  ## Query using a QueryIndex, this updates the generation pointer and is more efficient than `forEach` directly.
+  ## As it only has to query if the pointer has decayed
   if world.archetypes.len != query.generation:
     for i, _ in filterInd(world.archetypes.toOpenArray(query.generation, world.archetypes.high), T):
       query.indices.add i + query.generation
