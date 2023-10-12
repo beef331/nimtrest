@@ -119,6 +119,9 @@ proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
   result.add ")"
 
 proc getTheTypeInfo*(t: auto): TypeInfo = t.getTypeInfo()
+proc getTheTypeInfo*(t: distinct): TypeInfo =
+  var meh {.global.} = 0
+  meh.addr
 
 proc getTheTypeInfo*[T](n: Not[T]): TypeInfo =
   var a = default(T)
@@ -244,20 +247,21 @@ iterator foreach*[T](arch: ArchetypeBase, tup: typedesc[T]): auto = # Todo make 
 
     if found >= indices.len: # Found all fields we can leave
       break
-
-    for i in 0..<arch.typeCount:
-      when field is Not:
-        if arch.types[i] == field.getTheTypeInfo: # We hit on a `Not` exiting
-          found = 0
-          break
-      else:
-        if arch.types[i] == field.getTheTypeInfo: # We found a proper field
-          indices[found] = i
-          inc found
-          if found >= indices.len:
-            break
+    block searching:
+      for i in 0..<arch.typeCount:
+        when field is Not:
+          if arch.types[i] == field.getTheTypeInfo: # We hit on a `Not` exiting
+            found = 0
+            break searching
+        else:
+          if arch.types[i] == field.getTheTypeInfo: # We found a proper field
+            indices[found] = i
+            inc found
+            if found >= indices.len:
+              break
 
   if found == indices.len:
+    echo "found: ", tup
     for i in 0..<arch.len:
       yield arch.generateAccess(i, indices, def)
 
