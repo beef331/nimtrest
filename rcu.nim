@@ -66,7 +66,7 @@ proc remove*[T, Y](rcu: var RcuList[T, Y], toRemove: RcuNode[T]) =
       toRemove.next.parent = toRemove.parent
 
 proc waitUntilFinished*[T](rcuList: var RcuList[T, false]): var RcuList[T, true] =
-  while rcuList.finished.load <= 0:
+  while rcuList.finished.load > 0:
     discard
   result = cast[ptr RcuList[T, true]](rcuList.addr)[] # Sadly cannot just do `RcuList[T, true]`
 
