@@ -18,12 +18,12 @@ proc findDigits(line: string, searchWords = false): int =
 
   if searchWords:
     for i, num in nums:
-      var foundInd = line.find(num)
+      var foundInd = line.find(num, last = leftInd)
       if foundInd > -1 and (foundInd < leftInd or leftInd == -1):
         tens = (i + 1) * 10
         leftInd = foundInd
 
-      foundInd = line.rFind(num)
+      foundInd = line.rFind(num, start = rightInd)
       if foundInd > -1 and (foundInd > rightInd or rightInd == -1):
         ones = (i + 1)
         rightInd = foundInd
