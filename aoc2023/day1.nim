@@ -30,11 +30,30 @@ proc findDigits(line: string, searchWords = false): int =
 
   tens + ones
 
+const replaceArr =
+  [
+    ("one", "o1e"),
+    ("two", "t2o"),
+    ("three", "t3e"),
+    ("four", "4"),
+    ("five", "f5e"),
+    ("six", "6"),
+    ("seven", "7n"),
+    ("eight", "e8t"),
+    ("nine", "n9e")
+  ]
+proc partTwoSilly(line: string): int =
+  var line = line
+  for (replaceName, replace) in replaceArr:
+    line = line.replace(replaceName, replace)
+  line[line.find(Digits)].toInt() * 10 + line[line.rfind(Digits)].toInt()
+  
+
 
 proc solveIt(name: string): (int, int) =
   for line in lines(name):
     result[0] += line.findDigits()
-    result[1] += line.findDigits(true)
+    result[1] += line.partTwoSilly() #line.findDigits(true)
 
 echo solveIt(paramStr(1))
 
