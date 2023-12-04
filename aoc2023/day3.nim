@@ -4,14 +4,16 @@ proc isSymbol(c: char): bool = c notin Digits + {'.'}
 
 proc adjacentCheck(start, nd, width, height: int, data: string): (bool, int) =
   template returnIf(cond: bool, charInd: int) =
-    let chr = data[charInd]
+    let 
+      ind = charInd
+      chr = data[ind]
     if cond and chr.isSymbol():
       if chr == '*':
-        return (true, charInd)
+        return (true, ind)
       return (true, -1)
 
   result = (false, -1)
-  var outChar: char
+
   for i in start .. nd:
     assert data[i] in Digits
 
@@ -37,7 +39,7 @@ proc solveIt(name: string): (int, int) =
     data = newStringOfCap(140 * 140)
     width: int
     height: int
-    gears: Table[int, seq[int]]
+    gears = initTable[int, (int, int)](128)
 
   for line in lines(name):
     if width == 0:
@@ -55,12 +57,14 @@ proc solveIt(name: string): (int, int) =
     if (let (adj, gearInd) = adjacentCheck(i, valLen + i - 1, width, height, data); adj):
       result[0] += val
       if gearInd >= 0:
-        if gears.hasKeyOrPut(gearInd, @[val]):
-          gears[gearInd].add val
+        if gears.hasKeyOrPut(gearInd, (val, -1)):
+          gears[gearInd][1] = val
 
     i += valLen
   for val in gears.values:
-    if val.len == 2:
+    if val[1] != -1:
       result[1] += val[0] * val[1]
-
-echo solveIt(paramStr(1))
+import std/[times, monotimes]
+let start = getMonoTime()
+discard solveIt(paramStr(1))
+echo getMonoTime() - start
