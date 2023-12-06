@@ -1,4 +1,18 @@
-import std/[os, enumerate, parseutils, strutils]
+import std/[os, enumerate, parseutils, strutils, math]
+
+proc solve(time, dist: int): int =
+  # equation is - x^2 + time * x - distance
+  # or (-time +- sqrt(time^2 - 4 * -1 * -dist)) / -2
+  let
+    time = time.float
+    dist = dist.float
+    fourAc = 4 * -1 * -dist
+    
+    upper = (-time - sqrt(time * time - fourAc)) / -2
+    lower = (-time + sqrt(time * time - fourAc)) / -2
+
+  result = int ceil(upper - 1) - floor(lower + 1) + 1 # offset the ranges so it's exclusive..exclusive
+
 
 
 proc solveIt(name: string): (int, int) =
@@ -24,6 +38,16 @@ proc solveIt(name: string): (int, int) =
       else:
         distances.add val
 
+  result = (1, solve(time2, distance2))
+
+  for i, time in times:
+    result[0] *= solve(time, distances[i])
+
+
+
+
+#[
+  First pass bruteforce ahead:
   result = (1, 0)
   for i in 0..times.high:
     let time = times[i]
@@ -33,10 +57,9 @@ proc solveIt(name: string): (int, int) =
         inc winCount
     result[0] *= winCount
 
-  var winCount = 0
   for val in 1..time2:
     if (time2 - val) * val > distance2:
       inc result[1] 
-
+]#
 
 echo solveIt(paramStr(1))
