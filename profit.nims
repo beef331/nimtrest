@@ -1,0 +1,3 @@
+--stacktrace:on
+--lineTrace:on
+--profiler:on
