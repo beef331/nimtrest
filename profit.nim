@@ -1,3 +1,7 @@
+## Copied some logic from `nimprof`
+## To use this `--profiler:on --stacktrace:on --linetrace:on` should be on.
+## With those on you can just `import profit`
+
 include system/timers
 import std/[tables, sets, strutils, exitprocs, strformat, hashes, deques, sequtils, algorithm, locks, sets]
 
@@ -196,8 +200,4 @@ proc reqHook(): bool {.nimcall.} =
 {.pop.}
 profilingRequestedHook = reqHook
 profilerHook = hook
-
-import std/[json, os]
-setTickDelay(parseInt(paramStr(1)))
-discard parseJson(readFile("5MB.txt"))
 
