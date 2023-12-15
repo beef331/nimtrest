@@ -5,6 +5,18 @@ const procTable = CacheSeq"MockedTable" # (Name, [(Types, PointerProc),...], ori
 macro addToTable(name, orig: typed) =
   procTable.add newStmtList(name, nnkBracketExpr.newNimNode(), orig)
 
+macro emitAllPointerProcs(): untyped =
+  result = newStmtList()
+  for entry in procTable:
+    for procs in entry[1]:
+      let inst = nnkBracketExpr.newTree(entry[^1][0])
+      for typ in procs[0..^2]:
+        inst.add typ
+
+      result.add:
+        genast(name = procs[^1], inst):
+          {.emit:["/*VARSECTION*/ typeof(", inst, ") *", name, " = &", inst, ";"].}
+
 macro isInstantiatable(name: typedesc): untyped =
   let name = name.getType()[^1]
   for entry in procTable:
@@ -27,7 +39,7 @@ proc getSym(types, table: NimNode): NimNode =
   for entry in table[1]:
     if types.len + 1 == entry.len:
       var matches = true
-      for i in 0..< types.len:
+      for i in 0 ..< types.len:
         if not types[i].sameType entry[i]:
           matches = false
           break
@@ -53,7 +65,7 @@ macro `[]`*(name: Instantiatable, args: varargs[typed]): untyped =
     args.copyChildrenTo(inst)
 
     result = genast(name, inst):
-      var name {.global.} = inst
+      var name {.global, nodecl.} = inst
       name
   else:
     result = sym
@@ -82,7 +94,7 @@ macro `[]=`*(name: Instantiatable, args: varargs[typed], newProc: untyped): unty
 
     tableData[1].add newEntry
     result = genast(name, newProc):
-      var name {.global.} = newProc
+      var name {.global, noDecl.} = newProc
   else:
     result = nnkAsgn.newTree(sym, newProc) 
 
@@ -113,6 +125,19 @@ static:
   echo doStuff.typeof().isInstantiatable
   assert doStuff is Instantiatable
 
+proc doOtherThing() =
+  doStuff[int]()
+  doStuff[int] = proc() = debugecho "What?!"
+  doStuff[int]()
+  doStuff[float]()
+  doStuff[float] = proc() = echo "Floaty insideProc"
+  doStuff[int]()
+  doStuff[float]()
+
+proc indirect[T]() =
+  doStuff[T]()
+  doStuff[T] = proc() = echo "What?!"
+  doStuff[T]()
 
 doStuff[int]()
 doStuff[int] = proc() = debugecho "What?!"
@@ -121,3 +146,13 @@ doStuff[float]()
 doStuff[float] = proc() = echo "Floaty"
 doStuff[int]()
 doStuff[float]()
+
+
+
+doOtherThing()
+doStuff[float]()
+indirect[float]()
+doStuff[float]()
+
+
+emitAllPointerProcs() # Required
