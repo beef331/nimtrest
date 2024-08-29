@@ -1,25 +1,25 @@
 import std/[macros, genasts]
 
+proc byref*[T: not (ref or ptr)](name: var T): ptr T = name.addr
+proc bycopy*[T](name: sink T): T {.inline.} = T
 
-macro expandProc(args, retT, env: typed): untyped =
-  result = nnkProcTy.newTree(nnkFormalParams.newTree(), nnkPragma.newTree(ident"nimcall"))
-  result[0].add retT.getTypeInst[1]
-  result.params.add newIdentDefs(ident"params", args.getTypeInst[1])
-  result.params.add newIdentDefs(ident"env", env.getTypeInst[1])
-
-proc byref[T: not (ref or ptr)](name: var T): ptr T = name.addr
-proc bycopy[T](name: sink T): T {.inline.} = T
-
-type Closure[Env; Args; ReturnType] = object
-  prc: expandProc(Args, ReturnType, Env)
-  env: Env
+type
+  Closure[Env; Prc: proc] = object
+    prc: Prc
+    env: Env
 
 type CaptureKind = enum
   ByRef
   ByCopy
   Move
 
-macro stackClosure(parameters: typedesc[tuple or void], returnType: typedesc, args: varargs[typed], body: untyped): untyped =
+proc makeVar(n: NimNode): NimNode =
+  if n.getType().typekind != ntyVar:
+    nnkVarTy.newTree(n.getType())
+  else:
+    n.getType()
+
+proc stackClosureImpl(theProc, args: NimNode): NimNode =
   var params: seq[(NimNode, CaptureKind)]
 
   for x in args[0..^1]:
@@ -46,8 +46,8 @@ macro stackClosure(parameters: typedesc[tuple or void], returnType: typedesc, ar
 
       params.add (x[1], kind)
 
-  result = newProc(body = body)
-  result.params[0] = returnType
+  result = theProc.copyNimTree()
+  let returnType = theProc.params[0]
 
   let envTuple = nnkTupleConstr.newTree()
 
@@ -56,9 +56,9 @@ macro stackClosure(parameters: typedesc[tuple or void], returnType: typedesc, ar
       sym = x[0]
       (name, typ) =
         if sym.kind == nnkHiddenDeref:
-          (ident $sym[0], nnkVarTy.newTree(sym.getType()))
+          (ident $sym[0], makeVar sym)
         else:
-          (ident $sym, sym.getType())
+          (ident $sym, makeVar sym)
     result.params.add newIdentDefs(name, typ)
     envTuple.add nnkExprColonExpr.newTree(name, args[i])
 
@@ -67,52 +67,55 @@ macro stackClosure(parameters: typedesc[tuple or void], returnType: typedesc, ar
     innerPrc = result
     caller = newProc()
 
-  caller.params[0] = returnType
-  caller.params.add newIdentDefs(ident"params", parameters)
-  caller.params.add newIdentDefs(ident"env", newCall("typeof", envTuple))
+  caller.params = theProc.params.copyNimTree
+  caller.params.add newIdentDefs(ident"env", nnkVarTy.newTree newCall("typeof", envTuple))
   caller[^1].add newCall(innerPrc)
-  for param in parameters:
-    caller[^1][0].add param[0]
+  caller[4] = nnkPragma.newTree(ident"nimcall")
+
+  for i, params in theProc.params:
+    if i > 0:
+      for def in params[0..^3]:
+        caller[^1][^1].add def
+
 
   for i, param in params:
     caller[^1][0].add nnkBracketExpr.newTree(ident"env", newLit i)
-    case param[1]
-    of ByRef:
+    if param[1] == ByRef:
       caller[^1][0][^1] = nnkBracketExpr.newTree(caller[^1][0][^1])
-    else:
-      discard
 
 
+  result = genast(clos = bindSym"Closure", caller, envTuple):
+    clos[typeof(envTuple), typeof(caller)](env: envTuple, prc: caller)
+
+macro stackClosure*(args: varargs[typed], theProc: untyped): untyped =
+  stackClosureImpl(theProc, args)
 
 
-  result = genast(clos = bindSym"Closure", envTuple, parameters, returnType, caller):
-    clos[typeof(envTuple), parameters, returnType](env: envTuple, prc: caller)
+macro stackClosureTyp*(theProc: untyped): untyped =
+  result = theProc
+  result[^1].add ident"nimcall"
+  result[0].add newIdentDefs(ident"_", nnkVarTy.newTree(ident"auto"))
 
-macro invoke[Params: not void, Ret, Env](clos: Closure[Env, Params, Ret], params: Params): untyped =
+macro invoke*[Env, Prc](clos: var Closure[Env, Prc], params: varargs[typed]): untyped =
   result = newCall(nnkDotExpr.newTree(clos, ident"prc"))
-  for param in params:
-    result.add param
+  params.copyChildrenTo(result)
 
   result.add nnkDotExpr.newTree(clos, ident"env")
 
+proc doThing(clos: var Closure[auto, proc(_, _: int) {.stackClosureTyp.}])=
+  clos.invoke(10, 20)
 
-macro invoke[Ret, Env](clos: Closure[Env, void, Ret]): untyped =
-  result = newCall(nnkDotExpr.newTree(clos, ident"prc"))
-  result.add nnkDotExpr.newTree(clos, ident"env")
-
-proc main(i: var int) =
+proc main(i: var int): auto =
   var s = @[0, 1, 2]
-  let clos = stackClosure(void, string, byref(i), ensureMove s):
+  result = proc(x: int, y: int) {.stackClosure(byref(i), ensureMove(s)).} =
+    s.add i
     inc i
-    $i
-
-  echo clos.invoke()
-  echo clos.invoke()
-  echo clos.invoke()
-
-
+    echo x, " ", y, " ", i, " ", s
 
 var i = 0
-main(i)
+var clos = main(i)
+clos.doThing()
+clos.doThing()
+clos.doThing()
 echo i
 

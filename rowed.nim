@@ -91,13 +91,25 @@ macro rowImpl(body: typedesc[NamedTuple]): untyped =
         body
     bodyRepr = body.repr
     rowName = genSym(nskType, "Row")
-    varName = ident"row"
+    varName = ident"rowVal"
 
   if bodyRepr in rowTable and not body.isGenericTuple():
     result = rowTable[bodyRepr]
   else:
     rowTable[bodyRepr] = rowName
     let typBody = newStmtList()
+    var refinementType = body.copyNimtree
+
+    for i in countDown(refinementType.len - 1, 0): # Remove the last field
+      if refinementType[i].len > 3:
+        refinementType[i].del(refinementType[i].len - 3)
+      else:
+        refinementType.del(i)
+
+      break
+
+    if refinementType.len > 0:
+      typBody.add varName.infix("is", newCall("row", refinementType))
 
     for idef in body:
       for name in idef[0..^3]:
@@ -107,6 +119,7 @@ macro rowImpl(body: typedesc[NamedTuple]): untyped =
       type rowName = concept varname
         body
       rowName
+  echo result.repr
 
 template row*(typ: typedesc[NamedTuple]): untyped =
   rowImpl skipAliases(typ)
@@ -255,9 +268,14 @@ macro join*(toJoin: varargs[typed], body: untyped): untyped =
       obj[^1].insert i, x
 
 proc doThing(r: row tuple[x, y: int]) = echo r
+proc doThing(r: row tuple[x: int]) = echo r
 proc otherThing(r: row tuple[x: int]) = echo "Hmm"
 
+doThing (x: 100, y: 200)
+doThing (x: 100, )
 
+
+#[
 type 
   MyRow[T] = row tuple[x, y: T] # Due to macro evaluation order this alias is required (it injects a `T`)
 
@@ -265,6 +283,7 @@ proc tryGeneric[T](r: MyRow[T], a: T) =
   echo r.x, " ", r.y, " ", a
 
 doThing (x: 100, y: 200)
+doThing (x: 100, )
 
 
 type 
@@ -291,3 +310,4 @@ assert a.x == 100
 a.x = 300
 assert a.x == 300
 otherThing a
+]#

@@ -227,17 +227,31 @@ macro generateAccess(arch: ArchetypeBase, ind: int, indArray: array, tup: Compon
     if val.kind != nnkBracketExpr or (val.kind == nnkBracketExpr and val[0] != bindSym"Not"):
       result.add:
         genast(val, ind, indArray, tup, i):
-          if arch.data[indArray[i]].len == 0:
-            nil
-          else:
-            let size = arch.data[indArray[i]].len div arch.len 
+          var res: ptr val
+          if arch.data[indArray[i]].len > 0:
+            let size = arch.data[indArray[i]].len div arch.len
             let element = arch.data[indArray[i]][size * ind].addr
-            when compiles(default(val) of RootObj):
-              cast[ptr val](cast[int](element) - sizeof(pointer)) # Actual fields starts at addr + pointer, offset so fields are in proper location
-            else:
-              cast[ptr val](element)
+            res =
+              when compiles(default(val) of RootObj):
+                cast[ptr val](cast[int](element) - sizeof(pointer)) # Actual fields starts at addr + pointer, offset so fields are in proper location
+              else:
+                cast[ptr val](element)
+          res[]
 
-iterator foreach*[T](arch: ArchetypeBase, tup: typedesc[T]): auto = # Todo make (var X, var Y, var Z, ...)
+macro varTuple*(t: typedesc): untyped =
+  result = t.getTypeInst[^1].copyNimTree
+
+  for i in countDown(result.len - 1, 0):
+    if result[i].kind == nnkBracketExpr and result[i][0] == bindSym"Not":
+      result.del(i)
+
+  for i, x in result:
+    if x.kind != nnkBracketExpr:
+      result[i] = nnkVarTy.newTree(x)
+  result = newCall("typeof", result)
+  echo result.treeRepr
+
+iterator foreach*[T](arch: ArchetypeBase, tup: typedesc[T]): tup.varTuple = # Todo make (var X, var Y, var Z, ...)
   var
     indices: array[getRequired(T), int]
     found = 0
@@ -261,9 +275,9 @@ iterator foreach*[T](arch: ArchetypeBase, tup: typedesc[T]): auto = # Todo make 
               break
 
   if found == indices.len:
-    echo "found: ", tup
     for i in 0..<arch.len:
       yield arch.generateAccess(i, indices, def)
+
 
 iterator foreach*(archs: openarray[ArchetypeBase], tup: typedesc[ComponentTuple], filtered: static bool = true): auto =
   when filtered:
@@ -329,7 +343,7 @@ iterator component*[T: not tuple](world: var World, entity: Entity, _: typedesc[
     theAddr = arch.data[ind][size * entity.entIndex].addr
   yield cast[ptr T](theAddr)[]
 
-iterator components*[T: tuple](world: var World, entity: Entity, _: typedesc[T]): auto =
+iterator components*[T: tuple](world: var World, entity: Entity, tup: typedesc[T]): tup.varTuple =
   ## Access the mutagle fields directly on an entity
   var
     indices: array[getRequired(T), int]
@@ -468,7 +482,7 @@ when isMainModule:
 
   for (pos,) in world.foreach (Position,):
     pos.x = 300
-    echo pos[]
+    echo pos
 
   for (health, pos) in world.foreach (Health, Position):
     pos.x = 300
@@ -477,8 +491,8 @@ when isMainModule:
 
 
   for (health, pos) in world.foreach (Health, Position):
-    assert pos[] == Position(x: 300, y: 10, z: 40)
-    assert health[] == Health(current: 100, max: 130)
+    assert pos == Position(x: 300, y: 10, z: 40)
+    assert health == Health(current: 100, max: 130)
 
   echo world.getArch (Position, )
   echo world.getArch (Position, Health)
