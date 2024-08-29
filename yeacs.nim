@@ -18,7 +18,7 @@ proc onlyUniqueValues*(t: typedesc[tuple]): bool =
       when nameA != nameB and fieldA is typeof(fieldB):
         return false
 
-type TypeInfo = pointer
+type TypeInfo = int
 
 type
   Entity* = ref object
@@ -77,7 +77,7 @@ proc makeArchetype*[T](tup: typedesc[T]): Archetype[tup] =
   const tupLen = getRequired(T)
   result =
     Archetype[tup](
-      types: newSeqOfCap[pointer](tupLen),
+      types: newSeqOfCap[TypeInfo](tupLen),
       data: newSeq[seq[byte]](tupLen)
     )
 
@@ -118,14 +118,9 @@ proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
       result.add ", "
   result.add ")"
 
-proc getTheTypeInfo*(t: auto): TypeInfo = t.getTypeInfo()
-proc getTheTypeInfo*(t: distinct): TypeInfo =
-  var meh {.global.} = 0
-  meh.addr
 
-proc getTheTypeInfo*[T](n: Not[T]): TypeInfo =
-  var a = default(T)
-  getTheTypeInfo(a)
+proc getTheTypeInfo*[T](t: Not[T] | T): TypeInfo =
+  result = static: hash(T.getTypeInst.signatureHash()).int
 
 iterator filterInd*[T](archetypes: openarray[ArchetypeBase], tup: typedesc[T]): (int, ArchetypeBase) =
   ## Iterates archetypes yielding all that can be converted to the tuple and the index.
@@ -249,7 +244,6 @@ macro varTuple*(t: typedesc): untyped =
     if x.kind != nnkBracketExpr:
       result[i] = nnkVarTy.newTree(x)
   result = newCall("typeof", result)
-  echo result.treeRepr
 
 iterator foreach*[T](arch: ArchetypeBase, tup: typedesc[T]): tup.varTuple = # Todo make (var X, var Y, var Z, ...)
   var

@@ -1,4 +1,4 @@
-import yeacs
+import ../yeacs
 
 type
   Health = distinct int
