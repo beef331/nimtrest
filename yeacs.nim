@@ -60,11 +60,12 @@ macro forTuplefields(tup: typed, body: untyped): untyped =
 
 proc `=destroy`(arch: typeof(ArchetypeBase()[])) =
   if arch.len > 0:
-    for i, _ in arch.types:
+    for i, coll in arch.data:
       let size = arch.data.len div arch.len
       for j in 0..<arch.len:
-        arch.destroyHooks[i](arch.data[j * size].addr)
+        arch.destroyHooks[i](coll[j * size].addr)
   `=destroy`(arch.types)
+  `=destroy`(arch.data)
   `=destroy`(arch.sinkHooks)
   `=destroy`(arch.destroyHooks)
 
