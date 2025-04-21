@@ -55,7 +55,7 @@ macro forTuplefields(tup: typed, body: untyped): untyped =
     let body = body.copyNimTree()
     body.insert 0:
       genast(x):
-        type Field{.inject.} = x
+        type Field {.inject.} = x
     result.add nnkIfStmt.newTree(nnkElifBranch.newTree(newLit(true), body))
   result = nnkBlockStmt.newTree(newEmptyNode(), result)
 
@@ -77,7 +77,7 @@ proc `hash`*(arch: ArchetypeBase): Hash = cast[Hash](arch)
 proc getRequired(t: typedesc[ComponentTuple]): int =
   ## Returns required component count
   ## This is the count minus the `Not` count
-  forTuplefields(t):
+  t.forTuplefields:
     when Field isnot Not:
       inc result
 
@@ -97,15 +97,15 @@ proc makeArchetype*[T](tup: typedesc[T]): Archetype[tup] =
 
   forTuplefields(T):
     result.types.add Field.getTheTypeInfo()
-    result.sinkHooks.add proc(a, b: pointer) =
+    result.sinkHooks.add proc(a, b: pointer) {.nimcall.} =
       let
         a = cast[ptr Field](a)
         b = cast[ptr Field](b)
-      `=sink`(a[], b[])
+      a[] = move b[]
 
-    result.destroyHooks.add proc(a: pointer) =
+    result.destroyHooks.add proc(a: pointer) {.nimcall.} =
       let a = cast[ptr Field](a)
-      `=destroy`(a[])
+      reset a[]
     result.sizes.add sizeof(Field)
 
 
@@ -296,15 +296,16 @@ iterator foreach*[T](arch: ArchetypeBase, tup: typedesc[T]): tup.varTuple =
 
 
 macro yieldIteratorImpl(call: untyped, typ: typed): untyped =
-  result = nnkForStmt.newTree(nnkVarTuple.newNimNode())
+  let arg = ident"arg"
+  result = nnkForStmt.newTree(arg)
   let yieldedTup = nnkTupleConstr.newTree()
 
   for i, _ in typ.getTypeInst[^1]:
-    result[0].add ident("arg" & $i)
-    yieldedTup.add result[0][^1]
-  result[0].add newEmptyNode()
+    yieldedTup.add nnkBracketExpr.newTree(arg, newLit i)
+
   result.add call
   result.add nnkYieldStmt.newTree(yieldedTup)
+
 
 template yieldIterator(call: untyped): untyped =
   yieldIteratorImpl(call, typeof(call))
@@ -494,7 +495,7 @@ when isMainModule:
   type
     Position = object of RootObj
       x, y, z: float32
-    Health = object of RootObj
+    Health = object
       current, max: int32
 
   proc `=destroy`(h: var Health) =
@@ -512,9 +513,9 @@ when isMainModule:
   world.addComponent(myEnt, Health())
 
 
-  for (pos,) in world.foreach (Position,):
-    pos.x = 300
-    echo pos
+  for props in world.foreach (Position,):
+    props[0].x = 300
+    echo props[0]
 
   for (health, pos) in world.foreach (Health, Position):
     pos.x = 300
