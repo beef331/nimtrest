@@ -3,7 +3,7 @@ This is a not a sincere attempt at an ECS, more a sincere attempt at making an E
 That means yeacs uses a fair bit of runtime type information.
 ]##
 
-import std/[typetraits, macros, genasts, strformat, enumerate, tables, hashes, sequtils]
+import std/[typetraits, macros, genasts, strformat, tables, hashes, sequtils]
 
 proc onlyUniqueValues*(t: typedesc[tuple]): bool =
   result = true
@@ -29,8 +29,8 @@ type
     types: seq[TypeInfo] # For low level we use the nim provided type information to query, this is scraped inside data
     data: seq[seq[byte]] # type erased data collections, the RTTI is used to allocate/move these
     sizes: seq[int] # Size of the data
-    sinkHooks: seq[proc(a, b: pointer){.nimcall.}]
-    destroyHooks: seq[proc(a: pointer){.nimcall.}]
+    sinkHooks: seq[proc(a, b: pointer){.nimcall, raises: [].}]
+    destroyHooks: seq[proc(a: pointer){.nimcall, raises: [].}]
     len: int
 
   Archetype*[T: ComponentTuple] = ref object of ArchetypeBase
@@ -59,7 +59,7 @@ macro forTuplefields(tup: typed, body: untyped): untyped =
     result.add nnkIfStmt.newTree(nnkElifBranch.newTree(newLit(true), body))
   result = nnkBlockStmt.newTree(newEmptyNode(), result)
 
-proc `=destroy`(arch: typeof(ArchetypeBase()[])) =
+proc `=destroy`(arch: var typeof(ArchetypeBase()[])) =
   if arch.len > 0:
     for i, coll in arch.data:
       let size = arch.sizes[i]
@@ -292,20 +292,31 @@ iterator foreach*[T](arch: ArchetypeBase, tup: typedesc[T]): tup.varTuple =
       yield arch.generateAccess(i, indices, def)
 
 
-iterator foreach*(archs: openarray[ArchetypeBase], tup: typedesc[ComponentTuple], filtered: static bool = true): auto =
+macro yieldIteratorImpl(call: untyped, typ: typed): untyped =
+  result = nnkForStmt.newTree(nnkVarTuple.newNimNode())
+  let yieldedTup = nnkTupleConstr.newTree()
+
+  for i, _ in typ.getTypeInst[^1]:
+    result[0].add ident("arg" & $i)
+    yieldedTup.add result[0][^1]
+  result[0].add newEmptyNode()
+  result.add call
+  result.add nnkYieldStmt.newTree(yieldedTup)
+
+template yieldIterator(call: untyped): untyped =
+  yieldIteratorImpl(call, typeof(call))
+
+iterator foreach*(archs: openarray[ArchetypeBase], tup: typedesc[ComponentTuple], filtered: static bool = true): tup.varTuple =
   when filtered:
     for arch in archs.filter(tup):
-      for ent in arch.foreach(tup):
-        yield ent
+      yieldIterator arch.foreach(tup)
   else:
     for arch in archs:
-      for ent in arch.foreach(tup):
-        yield ent
+      yieldIterator arch.foreach(tup)
 
-iterator foreach*(world: World, t: typedesc[ComponentTuple]): auto =
+iterator foreach*(world: World, t: typedesc[ComponentTuple]): t.varTuple =
   for arch in world.archetypes:
-    for ent in arch.foreach(t):
-      yield ent
+    yieldIterator arch.foreach(t)
 
 proc isApartOf*[T: ComponentTuple](entity: typedesc[T], arch: ArchetypeBase): bool =
   ## Is this component tuple exactly this `arch`
@@ -465,7 +476,7 @@ proc removeComponent*[T](world: var World, entity: var Entity, comp: typedesc[T]
   else:
     fromArch.removeEntity(entity.entIndex)
 
-iterator query*[T](world: var World, query: var QueryIndex[T]): auto =
+iterator query*[T](world: var World, query: var QueryIndex[T]): T.varTuple =
   ## Query using a QueryIndex, this updates the generation pointer and is more efficient than `forEach` directly.
   ## As it only has to query if the pointer has decayed
   if world.archetypes.len != query.generation:
@@ -474,8 +485,7 @@ iterator query*[T](world: var World, query: var QueryIndex[T]): auto =
     query.generation = world.archetypes.len
 
   for queryInd in query.indices:
-    for ent in world.archetypes[queryInd].foreach(T):
-      yield ent
+    yieldIterator world.archetypes[queryInd].foreach(T)
 
 when isMainModule:
   type
@@ -484,12 +494,12 @@ when isMainModule:
     Health = object of RootObj
       current, max: int32
 
-  proc `=destroy`(h: Health) =
+  proc `=destroy`(h: var Health) =
     if h.current != 0 and h.max != 0:
       echo h
 
-  proc `=copy`(_: var Health, _: Health) {.error.}
-  proc `=dup`(_: Health): Health {.error.}
+  proc `=copy`(a: var Health, b: Health) {.error.}
+  proc `=dup`(a: Health): Health {.error.}
 
   var world = World()
   world.addEntity (Position(x: 100, y: 10, z: 10), )
