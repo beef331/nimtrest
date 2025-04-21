@@ -28,6 +28,7 @@ type
     generation: int # Every time we move an entity or do something to cause an index to be invalidate we increment this, only have 2^64 changes so be careful
     types: seq[TypeInfo] # For low level we use the nim provided type information to query, this is scraped inside data
     data: seq[seq[byte]] # type erased data collections, the RTTI is used to allocate/move these
+    sizes: seq[int] # Size of the data
     sinkHooks: seq[proc(a, b: pointer){.nimcall.}]
     destroyHooks: seq[proc(a: pointer){.nimcall.}]
     len: int
@@ -61,11 +62,12 @@ macro forTuplefields(tup: typed, body: untyped): untyped =
 proc `=destroy`(arch: typeof(ArchetypeBase()[])) =
   if arch.len > 0:
     for i, coll in arch.data:
-      let size = arch.data.len div arch.len
+      let size = arch.sizes[i]
       for j in 0..<arch.len:
         arch.destroyHooks[i](coll[j * size].addr)
   `=destroy`(arch.types)
   `=destroy`(arch.data)
+  `=destroy`(arch.sizes)
   `=destroy`(arch.sinkHooks)
   `=destroy`(arch.destroyHooks)
 
@@ -89,7 +91,8 @@ proc makeArchetype*[T](tup: typedesc[T]): Archetype[tup] =
   result =
     Archetype[tup](
       types: newSeqOfCap[TypeInfo](tupLen),
-      data: newSeq[seq[byte]](tupLen)
+      data: newSeq[seq[byte]](tupLen),
+      sizes: newSeqOfCap[int](tupLen)
     )
 
   forTuplefields(T):
@@ -103,12 +106,14 @@ proc makeArchetype*[T](tup: typedesc[T]): Archetype[tup] =
     result.destroyHooks.add proc(a: pointer) =
       let a = cast[ptr Field](a)
       `=destroy`(a[])
+    result.sizes.add sizeof(Field)
 
 
 proc makeArchetype[T](typeInfo: sink seq[TypeInfo], previous: ArchetypeBase, newType: T): ArchetypeBase =
   result =
     ArchetypeBase(
       types: typeInfo,
+      sizes: previous.sizes,
       data: newSeq[seq[byte]](previous.data.len + 1),
       sinkHooks: previous.sinkHooks,
       destroyHooks: previous.destroyHooks
@@ -122,7 +127,7 @@ proc makeArchetype[T](typeInfo: sink seq[TypeInfo], previous: ArchetypeBase, new
   result.destroyHooks.add proc(a: pointer) =
     let a = cast[ptr T](a)
     `=destroy`(a[])
-
+  result.sizes.add sizeof(newType)
 
 proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
   const
@@ -216,9 +221,9 @@ proc add*[T](arch: Archetype[T], tup: T) =
 proc removeEntity(arch: ArchetypeBase, entityId: int) =
   # This logic handles moving data around the old buffer
   inc arch.generation
-  for comp in arch.data.mitems:
+  for i, comp in arch.data.mpairs:
     if comp.len > 0:
-      let size = comp.len div arch.len
+      let size = arch.sizes[i]
       comp.delete(size * entityId .. size * (entityId + 1) - 1)
   dec arch.len
 
