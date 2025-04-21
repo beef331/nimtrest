@@ -4,6 +4,7 @@ That means yeacs uses a fair bit of runtime type information.
 ]##
 
 import std/[typetraits, macros, genasts, strformat, tables, hashes, sequtils]
+import alignedseq
 
 proc onlyUniqueValues*(t: typedesc[tuple]): bool =
   result = true
@@ -27,7 +28,7 @@ type
   ArchetypeBase* = ref object of RootObj
     generation: int # Every time we move an entity or do something to cause an index to be invalidate we increment this, only have 2^64 changes so be careful
     types: seq[TypeInfo] # For low level we use the nim provided type information to query, this is scraped inside data
-    data: seq[seq[byte]] # type erased data collections, the RTTI is used to allocate/move these
+    data: seq[AlignedSeq[byte]] # type erased data collections, the RTTI is used to allocate/move these
     sizes: seq[int] # Size of the data
     sinkHooks: seq[proc(a, b: pointer){.nimcall, raises: [].}]
     destroyHooks: seq[proc(a: pointer){.nimcall, raises: [].}]
@@ -61,15 +62,15 @@ macro forTuplefields(tup: typed, body: untyped): untyped =
 
 proc `=destroy`(arch: var typeof(ArchetypeBase()[])) =
   if arch.len > 0:
-    for i, coll in arch.data:
+    for i in 0..<arch.data.len:
       let size = arch.sizes[i]
       for j in 0..<arch.len:
-        arch.destroyHooks[i](coll[j * size].addr)
-  `=destroy`(arch.types)
-  `=destroy`(arch.data)
-  `=destroy`(arch.sizes)
-  `=destroy`(arch.sinkHooks)
-  `=destroy`(arch.destroyHooks)
+        arch.destroyHooks[i](arch.data[i][j * size].addr)
+  reset arch.types
+  reset arch.data
+  reset arch.sizes
+  reset arch.sinkHooks
+  reset arch.destroyHooks
 
 
 proc `hash`*(arch: ArchetypeBase): Hash = cast[Hash](arch)
@@ -91,7 +92,7 @@ proc makeArchetype*[T](tup: typedesc[T]): Archetype[tup] =
   result =
     Archetype[tup](
       types: newSeqOfCap[TypeInfo](tupLen),
-      data: newSeq[seq[byte]](tupLen),
+      data: newSeqOfCap[AlignedSeq[byte]](tupLen),
       sizes: newSeqOfCap[int](tupLen)
     )
 
@@ -106,7 +107,9 @@ proc makeArchetype*[T](tup: typedesc[T]): Archetype[tup] =
     result.destroyHooks.add proc(a: pointer) {.nimcall.} =
       let a = cast[ptr Field](a)
       reset a[]
+
     result.sizes.add sizeof(Field)
+    result.data.add AlignedSeq[byte].init(alignOf(T))
 
 
 proc makeArchetype[T](typeInfo: sink seq[TypeInfo], previous: ArchetypeBase, newType: T): ArchetypeBase =
@@ -114,10 +117,16 @@ proc makeArchetype[T](typeInfo: sink seq[TypeInfo], previous: ArchetypeBase, new
     ArchetypeBase(
       types: typeInfo,
       sizes: previous.sizes,
-      data: newSeq[seq[byte]](previous.data.len + 1),
+      data: newSeq[AlignedSeq[byte]](previous.data.len),
       sinkHooks: previous.sinkHooks,
       destroyHooks: previous.destroyHooks
     )
+
+  for i, data in result.data.mpairs:
+    data = AlignedSeq[byte].init(previous.data[i].alignment)
+
+  result.data.add AlignedSeq[byte].init(alignOf(T))
+
   result.sinkHooks.add proc(a, b: pointer) =
     let
       a = cast[ptr T](a)
@@ -145,6 +154,7 @@ proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
       if ind < tupLen - 1:
         result.add ", "
       inc ind
+      wasMoved(field)
 
     if i < len - 1:
       result.add ", "
@@ -275,17 +285,16 @@ iterator foreach*[T](arch: ArchetypeBase, tup: typedesc[T]): tup.varTuple =
   var
     indices: array[getRequired(T), int]
     found = 0
-    def: tup
 
-  for field in def.fields: # Search for the indices in this object
+  tup.forTuplefields:
     block searching:
       for i in 0..<arch.typeCount:
-        when field is Not:
-          if arch.types[i] == field.typeof.getTheTypeInfo: # We hit on a `Not` exiting
+        when Field is Not:
+          if arch.types[i] == Field.getTheTypeInfo: # We hit on a `Not` exiting
             found = -1
             break searching
         else:
-          if arch.types[i] == field.typeof.getTheTypeInfo: # We found a proper field
+          if arch.types[i] == Field.getTheTypeInfo: # We found a proper field
             indices[found] = i
             inc found
             if found >= indices.len:
@@ -293,8 +302,8 @@ iterator foreach*[T](arch: ArchetypeBase, tup: typedesc[T]): tup.varTuple =
 
   if found == indices.len:
     for i in 0..<arch.len:
+      var def = default tup
       yield arch.generateAccess(i, indices, def)
-
 
 macro yieldIteratorImpl(call: untyped, typ: typed): untyped =
   let arg = ident"arg"

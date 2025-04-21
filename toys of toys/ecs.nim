@@ -33,7 +33,7 @@ type
 
 proc `=destroy`(v: Velocity) =
   if v.dx != 0 or v.dy != 0:
-    echo "Buh bye"
+    echo "Buh bye: ", v
 
 proc moveSystem(world: var World) =
   for (pos, vel, size) in world.foreach (Position, Velocity, Size):
