@@ -232,8 +232,11 @@ proc moveEntity(fromArch, toArch: ArchetypeBase, entityId: int) =
   for i, typA in toArch.types:
     for j, typB in fromArch.types:
       if typA == typB: # found a type we had that we need to copy over
-        let size = fromArch.data[j].len div fromArch.len
-        toArch.data[i].add fromArch.data[j].toOpenArray(entityId * size, (entityId + 1) * size - 1)
+        let
+          size = fromArch.sizes[i]
+          startLen = toArch.data[j].len
+        toArch.data[j].setLen(startLen + size)
+        fromArch.sinkHooks[i](toArch.data[i][startLen].addr, fromArch.data[j][entityId * size].addr)
         inc moved
         break
 
@@ -433,7 +436,7 @@ proc addComponent*[T](world: var World, entity: Entity, component: sink T) =
       const size = sizeof(component)
       let startLen = arch.data[i].len
       arch.data[i].setLen(startLen + size)
-      copyMem(arch.data[i][startLen].addr, component.addr, size)
+      arch.sinkHooks[i](arch.data[i][startLen].addr, component.addr)
       break
 
   if not hasOldArch:
