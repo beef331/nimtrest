@@ -5,11 +5,6 @@ That means yeacs uses a fair bit of runtime type information.
 
 import std/[typetraits, macros, genasts, strformat, enumerate, tables, hashes, sequtils]
 
-type
-  ComponentTuple* = concept ct, type CT
-    onlyUniqueValues(CT)
-  Not*[T] = distinct T
-
 proc onlyUniqueValues*(t: typedesc[tuple]): bool =
   result = true
   let def = default(t)
@@ -17,6 +12,11 @@ proc onlyUniqueValues*(t: typedesc[tuple]): bool =
     for nameB, fieldB in def.fieldPairs:
       when nameA != nameB and fieldA is typeof(fieldB):
         return false
+
+type
+  ComponentTuple* = concept ct, type CT
+    onlyUniqueValues(CT)
+  Not*[T] = distinct T
 
 type TypeInfo = int
 
@@ -28,6 +28,8 @@ type
     generation: int # Every time we move an entity or do something to cause an index to be invalidate we increment this, only have 2^64 changes so be careful
     types: seq[TypeInfo] # For low level we use the nim provided type information to query, this is scraped inside data
     data: seq[seq[byte]] # type erased data collections, the RTTI is used to allocate/move these
+    sinkHooks: seq[proc(a, b: pointer){.nimcall.}]
+    destroyHooks: seq[proc(a: pointer){.nimcall.}]
     len: int
 
   Archetype*[T: ComponentTuple] = ref object of ArchetypeBase
@@ -40,32 +42,40 @@ type
     indices: seq[int]
     generation: int
 
+macro forTuplefields(tup: typed, body: untyped): untyped =
+  result = newStmtList()
+  let tup =
+    if tup.kind != nnkTupleConstr:
+      tup.getTypeInst[^1]
+    else:
+      tup
+
+  for x in tup:
+    let body = body.copyNimTree()
+    body.insert 0:
+      genast(x):
+        type Field{.inject.} = x
+    result.add nnkIfStmt.newTree(nnkElifBranch.newTree(newLit(true), body))
+  result = nnkBlockStmt.newTree(newEmptyNode(), result)
+
+proc `=destroy`(arch: typeof(ArchetypeBase()[])) =
+  if arch.len > 0:
+    for i, _ in arch.types:
+      let size = arch.data.len div arch.len
+      for j in 0..<arch.len:
+        arch.destroyHooks[i](arch.data[j * size].addr)
+  `=destroy`(arch.types)
+  `=destroy`(arch.sinkHooks)
+  `=destroy`(arch.destroyHooks)
+
+
 proc `hash`*(arch: ArchetypeBase): Hash = cast[Hash](arch)
-
-template realCompSize*[T](val: T): int =
-  ## Returns the component size - type information to reduce unused data
-  when compiles(val of RootObj):
-    sizeof(T) - sizeof(pointer)
-  else:
-    sizeof(T)
-
-template componentAddr*[T](t: T): pointer =
-  ## Returns the address to the first field, or nothing if the object is field-less
-  var thePtr: pointer
-  when compiles((for x in t.fields: discard)):
-    for field in t.fields:
-      thePtr = field.unsafeaddr
-      break
-  else:
-    thePtr = t.unsafeAddr
-  thePtr
 
 proc getRequired(t: typedesc[ComponentTuple]): int =
   ## Returns required component count
   ## This is the count minus the `Not` count
-  var theTup = default(t)
-  for field in theTup.fields:
-    when field isnot Not:
+  forTuplefields(t):
+    when Field isnot Not:
       inc result
 
 proc typeCount*(archetype: ArchetypeBase): int =
@@ -81,17 +91,37 @@ proc makeArchetype*[T](tup: typedesc[T]): Archetype[tup] =
       data: newSeq[seq[byte]](tupLen)
     )
 
-  let def = default(tup)
-  for field in def.fields:
-    result.types.add field.getTheTypeInfo
+  forTuplefields(T):
+    result.types.add Field.getTheTypeInfo()
+    result.sinkHooks.add proc(a, b: pointer) =
+      let
+        a = cast[ptr Field](a)
+        b = cast[ptr Field](b)
+      `=sink`(a[], b[])
+
+    result.destroyHooks.add proc(a: pointer) =
+      let a = cast[ptr Field](a)
+      `=destroy`(a[])
 
 
 proc makeArchetype[T](typeInfo: sink seq[TypeInfo], previous: ArchetypeBase, newType: T): ArchetypeBase =
   result =
     ArchetypeBase(
       types: typeInfo,
-      data: newSeq[seq[byte]](previous.data.len + 1)
+      data: newSeq[seq[byte]](previous.data.len + 1),
+      sinkHooks: previous.sinkHooks,
+      destroyHooks: previous.destroyHooks
     )
+  result.sinkHooks.add proc(a, b: pointer) =
+    let
+      a = cast[ptr T](a)
+      b = cast[ptr T](b)
+    `=sink`(a[], b[])
+
+  result.destroyHooks.add proc(a: pointer) =
+    let a = cast[ptr T](a)
+    `=destroy`(a[])
+
 
 proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
   const
@@ -100,41 +130,37 @@ proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
   result = fmt"Archetype[{typStr}]("
   let len = arch.len
   for i in 0..<len:
-    let def = default T
-    for ind, field in enumerate def.fields:
-      let
-        startField = arch.data[ind][i * field.realCompSize()].addr
-        data =
-          when compiles(field of RootObj):
-            cast[pointer](cast[int](startField) - sizeof(pointer))
-          else:
-            pointer startField
-      copyMem(field.unsafeaddr, data, sizeof(field))
+    var ind = 0
+    forTuplefields(T):
+      var field: Field
+      copyMem(field.addr, arch.data[ind][i * Field.sizeof()].addr, sizeof(field))
       result.add $field
-
       if ind < tupLen - 1:
         result.add ", "
+      inc ind
+
     if i < len - 1:
       result.add ", "
+
   result.add ")"
 
 
-proc getTheTypeInfo*[T](t: Not[T] | T): TypeInfo =
+proc getTheTypeInfo*[T](t: typedesc[Not[T] | T]): TypeInfo =
   result = static: hash(T.getTypeInst.signatureHash()).int
 
 iterator filterInd*[T](archetypes: openarray[ArchetypeBase], tup: typedesc[T]): (int, ArchetypeBase) =
   ## Iterates archetypes yielding all that can be converted to the tuple and the index.
   ## This means they share at least all components of `tup`
-  var def: tup
   const requiredCount = getRequired(T)
   for i, arch in archetypes:
     block search:
       if arch.typeCount >= requiredCount:
         var found = 0
-        for field in def.fields:
+        forTuplefields(tup):
           for i in 0..<arch.typeCount:
-            if arch.types[i] == field.getTheTypeInfo:
-              when field is Not:
+            if arch.types[i] == Field.getTheTypeInfo:
+              when Field is Not:
+                found = 0
                 break search
               else:
                 inc found
@@ -170,24 +196,21 @@ proc filter*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]
   for x in filter(archeTypes, tup):
     result.add x
 
-proc add*[T](arch: Archetype[T], tup: sink T) =
+proc add*[T](arch: Archetype[T], tup: T) =
   for field in tup.fields: # Iterate each component and copy it to `data`
     let ind = block:
       var val = -1
       for i, typInfo in arch.types:
-        if typInfo == field.getTheTypeInfo():
+        if typInfo == field.typeof.getTheTypeInfo():
           val = i
       val
     assert ind >= 0
 
-    const realSize = realCompSize(field) 
     let startLen = arch.data[ind].len
-    arch.data[ind].setLen(arch.data[ind].len + realSize)
-
-    let compAddr = componentAddr(field)
-    if compAddr != nil: # Only copy if we have a field
-      arch.data[ind][startLen].addr.copyMem(compAddr, realSize)
+    arch.data[ind].setLen(arch.data[ind].len + sizeof(field))
+    copyMem(arch.data[ind][startLen].addr, field.addr, sizeof(field))
   inc arch.len
+
 
 proc removeEntity(arch: ArchetypeBase, entityId: int) =
   # This logic handles moving data around the old buffer
@@ -222,16 +245,9 @@ macro generateAccess(arch: ArchetypeBase, ind: int, indArray: array, tup: Compon
     if val.kind != nnkBracketExpr or (val.kind == nnkBracketExpr and val[0] != bindSym"Not"):
       result.add:
         genast(val, ind, indArray, tup, i):
-          var res: ptr val
-          if arch.data[indArray[i]].len > 0:
-            let size = arch.data[indArray[i]].len div arch.len
-            let element = arch.data[indArray[i]][size * ind].addr
-            res =
-              when compiles(default(val) of RootObj):
-                cast[ptr val](cast[int](element) - sizeof(pointer)) # Actual fields starts at addr + pointer, offset so fields are in proper location
-              else:
-                cast[ptr val](element)
-          res[]
+          doAssert arch.data[indArray[i]].len >= 0
+          let element = arch.data[indArray[i]][sizeof(val) * ind].addr
+          cast[ptr val](element)[]
 
 macro varTuple*(t: typedesc): untyped =
   result = t.getTypeInst[^1].copyNimTree
@@ -245,24 +261,21 @@ macro varTuple*(t: typedesc): untyped =
       result[i] = nnkVarTy.newTree(x)
   result = newCall("typeof", result)
 
-iterator foreach*[T](arch: ArchetypeBase, tup: typedesc[T]): tup.varTuple = # Todo make (var X, var Y, var Z, ...)
+iterator foreach*[T](arch: ArchetypeBase, tup: typedesc[T]): tup.varTuple =
   var
     indices: array[getRequired(T), int]
     found = 0
     def: tup
 
   for field in def.fields: # Search for the indices in this object
-
-    if found >= indices.len: # Found all fields we can leave
-      break
     block searching:
       for i in 0..<arch.typeCount:
         when field is Not:
-          if arch.types[i] == field.getTheTypeInfo: # We hit on a `Not` exiting
-            found = 0
+          if arch.types[i] == field.typeof.getTheTypeInfo: # We hit on a `Not` exiting
+            found = -1
             break searching
         else:
-          if arch.types[i] == field.getTheTypeInfo: # We found a proper field
+          if arch.types[i] == field.typeof.getTheTypeInfo: # We found a proper field
             indices[found] = i
             inc found
             if found >= indices.len:
@@ -288,32 +301,31 @@ iterator foreach*(world: World, t: typedesc[ComponentTuple]): auto =
     for ent in arch.foreach(t):
       yield ent
 
-proc isApartOf*[T: ComponentTuple](entity: T, arch: ArchetypeBase): bool =
+proc isApartOf*[T: ComponentTuple](entity: typedesc[T], arch: ArchetypeBase): bool =
   ## Is this component tuple exactly this `arch`
   if tupleLen(T) == arch.typeCount:
-    for i, field in enumerate entity.fields:
-      if arch.types[i] != field.getTheTypeInfo():
+    var i = 0
+    forTuplefields(T):
+      if arch.types[i] != Field.getTheTypeInfo():
         return false
+      inc i
 
     result = true
 
 proc getArch*(world: World, T: typedesc[ComponentTuple]): Archetype[T] =
-  let def = default(T)
   for arch in world.archetypes:
-    if def.isApartOf(arch):
+    if T.isApartOf(arch):
       return Archetype[T](arch)
 
 proc addEntity*[T: ComponentTuple](world: var World, entity: sink T): Entity {.discardable.} =
-  const requiredCount = getRequired(T)
-
   for archId, arch in world.archetypes:
-    if entity.isApartOf(arch): # We found an arch, we can just add an entity and return it
+    if T.isApartOf(arch): # We found an arch, we can just add an entity and return it
       Archetype[T](arch).add entity
       let ent = Entity(archIndex: archId, entIndex: arch.len - 1)
       world.entityPointers[arch].add ent
       return ent
 
-  let newArch = makeArchetype typeof(entity) # No arch found, we need to make a new one then return an ent in it
+  let newArch = makeArchetype T # No arch found, we need to make a new one then return an ent in it
   newArch.add entity
   world.archetypes.add newArch
   let ent = Entity(archIndex: world.archeTypes.high, entIndex: newArch.len - 1)
@@ -352,11 +364,11 @@ iterator components*[T: tuple](world: var World, entity: Entity, tup: typedesc[T
 
     for i in 0..<arch.typeCount:
       when field is Not:
-        if arch.types[i] == field.getTheTypeInfo:
-          found = 0
+        if arch.types[i] == field.typeof.getTheTypeInfo:
+          found = -1
           break
       else:
-        if arch.types[i] == field.getTheTypeInfo:
+        if arch.types[i] == field.typeof.getTheTypeInfo:
           indices[found] = i
           inc found
           if found >= indices.len:
@@ -366,12 +378,13 @@ iterator components*[T: tuple](world: var World, entity: Entity, tup: typedesc[T
     for i in 0..<arch.len:
       yield arch.generateAccess(i, indices, def)
 
-proc addComponent*[T](world: var World, entity: Entity, component: T) =
+proc addComponent*[T](world: var World, entity: Entity, component: sink T) =
   let fromArch = world.archetypes[entity.archIndex]
 
   var
-    thisCompTypeInfo = component.getTheTypeInfo
+    thisCompTypeInfo = T.getTheTypeInfo
     neededComponents = fromArch.types
+
   if thisCompTypeInfo notin neededComponents: # Dont add more fields than required
     neededComponents.add thisCompTypeInfo
 
@@ -400,11 +413,10 @@ proc addComponent*[T](world: var World, entity: Entity, component: T) =
   
   for i, typ in arch.types: # We need to find where we have to copy this new component
     if thisCompTypeInfo == typ:
-      let compAddr = componentAddr(component)
-      if compAddr != nil:
-        const size = realCompSize(component)
-        arch.data[i].setLen(arch.data[i].len + size)
-        arch.data[i][^size].addr.copyMem(compAddr, size)
+      const size = sizeof(component)
+      let startLen = arch.data[i].len
+      arch.data[i].setLen(startLen + size)
+      copyMem(arch.data[i][startLen].addr, component.addr, size)
       break
 
   if not hasOldArch:
@@ -415,7 +427,7 @@ proc removeComponent*[T](world: var World, entity: var Entity, comp: typedesc[T]
 
   var
     component = default(comp)
-    thisCompTypeInfo = component.getTheTypeInfo
+    thisCompTypeInfo = comp.getTheTypeInfo
     neededComponents = fromArch.types
 
   if (let foundIndex = neededComponents.find(thisCompTypeInfo); foundIndex > 0):
@@ -461,10 +473,17 @@ iterator query*[T](world: var World, query: var QueryIndex[T]): auto =
 
 when isMainModule:
   type
-    Position = object
+    Position = object of RootObj
       x, y, z: float32
-    Health = object
+    Health = object of RootObj
       current, max: int32
+
+  proc `=destroy`(h: Health) =
+    if h.current != 0 and h.max != 0:
+      echo h
+
+  proc `=copy`(_: var Health, _: Health) {.error.}
+  proc `=dup`(_: Health): Health {.error.}
 
   var world = World()
   world.addEntity (Position(x: 100, y: 10, z: 10), )
@@ -488,6 +507,6 @@ when isMainModule:
     assert pos == Position(x: 300, y: 10, z: 40)
     assert health == Health(current: 100, max: 130)
 
-  echo world.getArch (Position, )
+  echo $world.getArch (Position, )
   echo world.getArch (Position, Health)
   echo world.getArch (Health, )

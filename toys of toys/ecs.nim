@@ -31,6 +31,10 @@ type
 
   Square = object
 
+proc `=destroy`(v: Velocity) =
+  if v.dx != 0 or v.dy != 0:
+    echo "Buh bye"
+
 proc moveSystem(world: var World) =
   for (pos, vel, size) in world.foreach (Position, Velocity, Size):
     let oldPosition = pos
@@ -69,13 +73,13 @@ proc airResistance(world: var World) =
 
 proc drawBall(world: var World) =
   var drawQuery {.global.}: QueryIndex[(Position, Draw, Size, Not[Square])]
-  var drawGravityQuery {.global.}: QueryIndex[(Position, Draw, Size, Square)]
+  var drawSquareQuery {.global.}: QueryIndex[(Position, Draw, Size, Square)]
   fill(255, 255, 255, 255)
   for (pos, _, size) in world.query(drawQuery):
     circleFill(pos.x, pos.y, size.r)
 
   fill(255, 0, 0, 255)
-  for (pos, _, size, _) in world.query(drawGravityQuery):
+  for (pos, _, size, _) in world.query(drawSquareQuery):
     rectFill(pos.x, pos.y, size.r, size.r)
 
 var 
