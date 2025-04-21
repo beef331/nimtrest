@@ -122,11 +122,12 @@ proc makeArchetype[T](typeInfo: sink seq[TypeInfo], previous: ArchetypeBase, new
     let
       a = cast[ptr T](a)
       b = cast[ptr T](b)
-    `=sink`(a[], b[])
+    a[] = move b[]
 
   result.destroyHooks.add proc(a: pointer) =
     let a = cast[ptr T](a)
-    `=destroy`(a[])
+    reset a[]
+
   result.sizes.add sizeof(newType)
 
 proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
