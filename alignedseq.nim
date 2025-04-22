@@ -57,21 +57,35 @@ proc init*[T](t: typedesc[AlignedSeq[T]], alignment: int, cap: int = 64, zeroMem
 
 
 proc setLen*[T](aseq: var AlignedSeq[T], len: int) =
+  when defined(debugAseq):
+    echo "Set len: ", len, " from ", aseq.len
   if len == aseq.len:
     discard
-  elif len < aseq.len:
+  elif len <= aseq.cap:
     for i in len..<aseq.len:
       reset aseq.data[i]
+    aseq.len = len
   else:
     let
+      newSize =
+        if aseq.cap == 0:
+          len
+        else:
+          aseq.cap div 2 * 3
       startLen = aseq.len
       oldData = aseq.data
-    aseq.data = allocPayload[T](aseq.alignment, len)
-    copyMem(aseq.data, oldData, payloadSize[T](aseq.alignment, startLen))
-    zeroMem(aseq.data[startLen].addr, len - startLen - 1)
-    cfree(oldData)
-    aseq.cap = len
-  aseq.len = len
+    aseq.data = allocPayload[T](aseq.alignment, newSize)
+    if startLen > 0:
+      copyMem(aseq.data, oldData, payloadSize[T](aseq.alignment, startLen))
+      zeroMem(aseq.data[startLen].addr, newSize - startLen - 1 * sizeof(T))
+    else:
+      zeroMem(aseq.data[startLen].addr, newSize * sizeof(T))
+
+    if oldData != nil:
+      cfree(oldData)
+    aseq.cap = newSize
+    aseq.len = len
+  assert aseq.len == len
 
 proc add*[T](aseq: var AlignedSeq[T], val: sink T) =
   if aseq.len == aseq.cap:
@@ -79,18 +93,19 @@ proc add*[T](aseq: var AlignedSeq[T], val: sink T) =
       newSize = aseq.cap div 2 * 3
       oldData = aseq.data
       oldCap = aseq.cap
-    aseq.data = allocPayload[T](aseq.alignment, len)
+    aseq.data = allocPayload[T](aseq.alignment, newSize)
     copyMem(aseq.data, oldData, payloadSize[T](aseq.alignment, oldCap))
     cfree(oldData)
     aseq.cap = newSize
 
   aseq.data.data[aseq.len - 1] = val
-  inc aseq.len, sizeof(T)
+  inc aseq.len
 
 template indexCheck[T](s: AlignedSeq[T], ind: int) =
   when compileOption("boundChecks"):
     if ind notin 0..<aseq.len:
-      raise (ref IndexDefect)(msg: "Index out of range " & $0 & "..<" & $aseq.len & ".")
+      {.line: instantiationInfo().}:
+        raise (ref IndexDefect)(msg: "Index " & $ind & " out of range 0..<" & $aseq.len & ".")
 
 proc `[]`*[T](aseq: AlignedSeq[T], ind: int): lent T =
   aseq.indexCheck(ind)
@@ -116,12 +131,12 @@ proc delete*[T](aseq: var AlignedSeq[T], ind: int) =
   dec aseq.len
 
 proc delete*[T](aseq: var AlignedSeq[T], rng: Slice[int]) =
-  var offset = 0
+  when defined(debugAseq):
+    echo "Deleting ", $rng , " from seq with length:  " , aseq.len
   for i in rng:
     aseq.indexCheck(i)
-    aseq[i] = aseq[rng.b + offset]
+    aseq[i] = aseq[rng.b + rng.a - i]
   dec aseq.len, rng.len
-
 
 iterator items*[T](aseq: AlignedSeq[T]): lent T =
   for i in 0..<aseq.len:

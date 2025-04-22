@@ -3,7 +3,7 @@ This is a not a sincere attempt at an ECS, more a sincere attempt at making an E
 That means yeacs uses a fair bit of runtime type information.
 ]##
 
-import std/[typetraits, macros, genasts, strformat, tables, hashes, sequtils]
+import std/[typetraits, macros, genasts, strformat, tables, hashes, sequtils, intsets, packedsets, strutils]
 import alignedseq
 
 proc onlyUniqueValues*(t: typedesc[tuple]): bool =
@@ -22,27 +22,64 @@ type
 type TypeInfo = int
 
 type
+  TypeInfos = distinct IntSet
+
   Entity* = ref object
     archIndex, entIndex: int
 
-  ArchetypeBase* = ref object of RootObj
+  Archetype* = ref object
     generation: int # Every time we move an entity or do something to cause an index to be invalidate we increment this, only have 2^64 changes so be careful
-    types: seq[TypeInfo] # For low level we use the nim provided type information to query, this is scraped inside data
+    types: TypeInfos
+    typeToIndex: Table[TypeInfo, int]
     data: seq[AlignedSeq[byte]] # type erased data collections, the RTTI is used to allocate/move these
     sizes: seq[int] # Size of the data
     sinkHooks: seq[proc(a, b: pointer){.nimcall, raises: [].}]
     destroyHooks: seq[proc(a: pointer){.nimcall, raises: [].}]
+    stringHooks: seq[proc(a: pointer): string{.nimcall, raises: [].}]
     len: int
 
-  Archetype*[T: ComponentTuple] = ref object of ArchetypeBase
-
   World* = object
-    archetypes*: seq[ArchetypeBase]
-    entityPointers: Table[ArchetypeBase, seq[Entity]]
+    archetypes*: seq[Archetype]
+    entityPointers: Table[Archetype, seq[Entity]]
 
   QueryIndex*[T: ComponentTuple] = object
     indices: seq[int]
     generation: int
+
+proc incl*(t: var TypeInfos, val: int) {.borrow.}
+proc excl*(t: var TypeInfos, val: int) {.borrow.}
+proc `*`*(a, b: TypeInfos): TypeInfos {.borrow.}
+proc contains*(a: TypeInfos, b: int): bool {.borrow.}
+proc `<`*(a, b: TypeInfos): bool {.borrow.}
+proc `<=`*(a, b: TypeInfos): bool {.borrow.}
+proc `==`*(a, b: TypeInfos): bool {.borrow.}
+proc len(a: TypeInfos): int {.borrow.}
+iterator items(a: TypeInfos): int =
+  for x in a.Intset.items:
+    yield x
+
+var
+  typeInfoCounter {.compiletime.} = 0
+  typeInfoNames: Table[TypeInfo, string]
+
+proc getTheTypeInfo*[T](t: typedesc[T]): TypeInfo =
+  result = static: typeInfoCounter
+  once:
+    discard typeInfoNames.hasKeyOrPut(result, $T)
+  static: inc typeInfoCounter
+
+proc getTheTypeInfo*[T](t: typedesc[Not[T]]): TypeInfo =
+  T.getTheTypeInfo()
+
+proc `$`*(t: TypeInfos): string =
+  result = "{"
+  for x in t:
+    result.add typeInfoNames[x]
+    result.add ", "
+
+  if result.endsWith ", ":
+    result.setLen(result.high - 1)
+  result.add "}"
 
 macro forTuplefields(tup: typed, body: untyped): untyped =
   result = newStmtList()
@@ -56,11 +93,11 @@ macro forTuplefields(tup: typed, body: untyped): untyped =
     let body = body.copyNimTree()
     body.insert 0:
       genast(x):
-        type Field {.inject.} = x
+        template Field(): untyped = x
     result.add nnkIfStmt.newTree(nnkElifBranch.newTree(newLit(true), body))
   result = nnkBlockStmt.newTree(newEmptyNode(), result)
 
-proc `=destroy`(arch: var typeof(ArchetypeBase()[])) =
+proc `=destroy`(arch: var typeof(Archetype()[])) =
   if arch.len > 0:
     for i in 0..<arch.data.len:
       let size = arch.sizes[i]
@@ -73,7 +110,7 @@ proc `=destroy`(arch: var typeof(ArchetypeBase()[])) =
   reset arch.destroyHooks
 
 
-proc `hash`*(arch: ArchetypeBase): Hash = cast[Hash](arch)
+proc `hash`*(arch: Archetype): Hash = cast[Hash](arch)
 
 proc getRequired(t: typedesc[ComponentTuple]): int =
   ## Returns required component count
@@ -82,22 +119,23 @@ proc getRequired(t: typedesc[ComponentTuple]): int =
     when Field isnot Not:
       inc result
 
-proc typeCount*(archetype: ArchetypeBase): int =
+proc typeCount*(archetype: Archetype): int =
   # Amount of components this archetype has
   archeType.types.len
 
-proc makeArchetype*[T](tup: typedesc[T]): Archetype[tup] =
+proc makeArchetype*[T](tup: typedesc[T]): Archetype =
   ## Generates an archetype based of a tuple.
   const tupLen = getRequired(T)
   result =
-    Archetype[tup](
-      types: newSeqOfCap[TypeInfo](tupLen),
+    Archetype(
       data: newSeqOfCap[AlignedSeq[byte]](tupLen),
       sizes: newSeqOfCap[int](tupLen)
     )
 
   forTuplefields(T):
-    result.types.add Field.getTheTypeInfo()
+    let fieldId = Field.getTheTypeInfo()
+    result.types.incl fieldId
+    result.typeToIndex[fieldId] = result.typeToIndex.len
     result.sinkHooks.add proc(a, b: pointer) {.nimcall.} =
       let
         a = cast[ptr Field](a)
@@ -108,19 +146,32 @@ proc makeArchetype*[T](tup: typedesc[T]): Archetype[tup] =
       let a = cast[ptr Field](a)
       reset a[]
 
+    result.stringHooks.add proc(a: pointer): string {.nimcall.} =
+      when compiles($cast[ptr Field](a)[]):
+        "(" & $Field & ")" & $cast[ptr Field](a)[]
+      else:
+        "(" & $Field & ")" & "..."
+
+
     result.sizes.add sizeof(Field)
     result.data.add AlignedSeq[byte].init(alignOf(T))
 
 
-proc makeArchetype[T](typeInfo: sink seq[TypeInfo], previous: ArchetypeBase, newType: T): ArchetypeBase =
+proc makeArchetype[T](typeInfo: sink TypeInfos, previous: Archetype, newType: T): Archetype =
   result =
-    ArchetypeBase(
+    Archetype(
       types: typeInfo,
+      typeToIndex: previous.typeToIndex,
       sizes: previous.sizes,
       data: newSeq[AlignedSeq[byte]](previous.data.len),
       sinkHooks: previous.sinkHooks,
-      destroyHooks: previous.destroyHooks
+      destroyHooks: previous.destroyHooks,
+      stringHooks: previous.stringHooks
     )
+
+  let id = T.getTheTypeInfo()
+  result.types.incl id
+  result.typeToIndex[id] = result.typeToIndex.len
 
   for i, data in result.data.mpairs:
     data = AlignedSeq[byte].init(previous.data[i].alignment)
@@ -137,35 +188,24 @@ proc makeArchetype[T](typeInfo: sink seq[TypeInfo], previous: ArchetypeBase, new
     let a = cast[ptr T](a)
     reset a[]
 
+  result.stringHooks.add proc(a: pointer): string {.nimcall.} =
+    when compiles($cast[ptr T](a)[]):
+      "(" & $T & ")" & $cast[ptr T](a)[]
+    else:
+      "(" & $T & ")" & "..."
+
   result.sizes.add sizeof(newType)
 
-proc `$`*[T: ComponentTuple](arch: Archetype[T]): string =
-  const
-    typStr = $T
-    tupLen = getRequired(T)
-  result = fmt"Archetype[{typStr}]("
-  let len = arch.len
-  for i in 0..<len:
-    var ind = 0
-    forTuplefields(T):
-      var field: Field
-      copyMem(field.addr, arch.data[ind][i * Field.sizeof()].addr, sizeof(field))
-      result.add $field
-      if ind < tupLen - 1:
-        result.add ", "
-      inc ind
-      wasMoved(field)
-
-    if i < len - 1:
+proc `$`*(arch: Archetype): string =
+  for ent in 0..<arch.len:
+    result.add "Entity " & $ent & ": ("
+    for comp in arch.types:
+      let ind = arch.typeToIndex[comp]
+      result.add arch.stringHooks[ind](arch.data[ind][ent * arch.sizes[ind]].addr)
       result.add ", "
+    result.add ")"
 
-  result.add ")"
-
-
-proc getTheTypeInfo*[T](t: typedesc[Not[T] | T]): TypeInfo =
-  result = static: hash(T.getTypeInst.signatureHash()).int
-
-iterator filterInd*[T](archetypes: openarray[ArchetypeBase], tup: typedesc[T]): (int, ArchetypeBase) =
+iterator filterInd*[T](archetypes: openarray[Archetype], tup: typedesc[T]): (int, Archetype) =
   ## Iterates archetypes yielding all that can be converted to the tuple and the index.
   ## This means they share at least all components of `tup`
   const requiredCount = getRequired(T)
@@ -175,9 +215,9 @@ iterator filterInd*[T](archetypes: openarray[ArchetypeBase], tup: typedesc[T]): 
         var found = 0
         forTuplefields(tup):
           for i in 0..<arch.typeCount:
-            if arch.types[i] == Field.getTheTypeInfo:
+            if Field.getTheTypeInfo in arch.types:
               when Field is Not:
-                found = 0
+                found = -1
                 break search
               else:
                 inc found
@@ -185,51 +225,35 @@ iterator filterInd*[T](archetypes: openarray[ArchetypeBase], tup: typedesc[T]): 
         if found == requiredCount:
           yield (i, arch)
 
-iterator filter*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]): ArchetypeBase =
+iterator filter*(archetypes: openarray[Archetype], tup: typedesc[ComponentTuple]): Archetype =
   ## Iterates archetypes yielding all that can be converted to the tuple.
   ## This means they share at least all components of `tup`
   for _, arch in archetypes.filterInd(tup):
     yield arch
 
-
-
-iterator filter*(archetypes: openarray[ArchetypeBase], typeInfo: openarray[TypeInfo]): (int, ArchetypeBase) =
+iterator filter*(archetypes: openarray[Archetype], typeInfo: TypeInfos): (int, Archetype) =
   ## Iterates archetypes yielding the position an archetype appears and the archetype that can be converted to the tuple.
   ## This means they share at least all components of `tup`.
   for i, arch in archetypes.pairs:
-    if arch.typeCount == typeInfo.len:
-      var found = 0
-      for x in typeInfo:
-        block searchForTyp:
-          for y in arch.types:
-            if x == y:
-              inc found
-              break searchForTyp # We found the type break out to reduce iterations
+    if arch.types >= typeInfo:
+      yield (i, arch)
 
-      if found == typeInfo.len:
-        yield (i, arch)
-
-proc filter*(archetypes: openarray[ArchetypeBase], tup: typedesc[ComponentTuple]): seq[ArchetypeBase] =
+proc filter*(archetypes: openarray[Archetype], tup: typedesc[ComponentTuple]): seq[Archetype] =
   for x in filter(archeTypes, tup):
     result.add x
 
-proc add*[T](arch: Archetype[T], tup: T) =
+proc add*[T](arch: Archetype, tup: sink T) =
   for field in tup.fields: # Iterate each component and copy it to `data`
-    let ind = block:
-      var val = -1
-      for i, typInfo in arch.types:
-        if typInfo == field.typeof.getTheTypeInfo():
-          val = i
-      val
-    assert ind >= 0
+    assert field.typeof.getTheTypeInfo() in arch.types
+    let ind = arch.typeToIndex[field.typeof.getTheTypeInfo()]
 
     let startLen = arch.data[ind].len
     arch.data[ind].setLen(arch.data[ind].len + sizeof(field))
-    copyMem(arch.data[ind][startLen].addr, field.addr, sizeof(field))
+    arch.sinkHooks[ind](arch.data[ind][startLen].addr, field.addr)
   inc arch.len
 
 
-proc removeEntity(arch: ArchetypeBase, entityId: int) =
+proc removeEntity(arch: Archetype, entityId: int) =
   # This logic handles moving data around the old buffer
   inc arch.generation
   for i, comp in arch.data.mpairs:
@@ -238,33 +262,28 @@ proc removeEntity(arch: ArchetypeBase, entityId: int) =
       comp.delete(size * entityId .. size * (entityId + 1) - 1)
   dec arch.len
 
-proc moveEntity(fromArch, toArch: ArchetypeBase, entityId: int) =
-  var moved = 0
-  for i, typA in toArch.types:
-    for j, typB in fromArch.types:
-      if typA == typB: # found a type we had that we need to copy over
-        let
-          size = fromArch.sizes[i]
-          startLen = toArch.data[j].len
-        toArch.data[j].setLen(startLen + size)
-        fromArch.sinkHooks[i](toArch.data[i][startLen].addr, fromArch.data[j][entityId * size].addr)
-        inc moved
-        break
+proc moveEntity(fromArch, toArch: Archetype, entityId: int) =
+  for i in toArch.types * fromArch.types:
+    let
+      toInd = toArch.typeToIndex[i]
+      fromInd = fromArch.typeToIndex[i]
+      size = toArch.sizes[toInd]
+      startLen = toArch.data[toInd].len
 
-    if moved == fromArch.typeCount:
-      break # Object fully moved we can exit the loop
-
-  assert moved == min(fromArch.typeCount, toArch.typeCount())
+    assert toArch.data[toInd].alignment == fromArch.data[fromInd].alignment
+    assert size == toArch.sizes[toInd]
+    toArch.data[toInd].setLen(startLen + size)
+    toArch.sinkHooks[toInd](toArch.data[toInd][startLen].addr, fromArch.data[fromInd][entityId * size].addr)
 
   inc toArch.len
   fromArch.removeEntity(entityId)
 
-macro generateAccess(arch: ArchetypeBase, ind: int, indArray: array, tup: ComponentTuple): untyped =
+macro generateAccess(arch: Archetype, ind: int, indArray: array, tup: typed): untyped =
   result = nnkTupleConstr.newTree()
-  for i, val in tup.getTypeImpl:
+  for i, val in tup.getTypeInst[^1]:
     if val.kind != nnkBracketExpr or (val.kind == nnkBracketExpr and val[0] != bindSym"Not"):
       result.add:
-        genast(val, ind, indArray, tup, i):
+        genast(val, ind, indArray, i):
           doAssert arch.data[indArray[i]].len >= 0
           let element = arch.data[indArray[i]][sizeof(val) * ind].addr
           cast[ptr val](element)[]
@@ -281,29 +300,24 @@ macro varTuple*(t: typedesc): untyped =
       result[i] = nnkVarTy.newTree(x)
   result = newCall("typeof", result)
 
-iterator foreach*[T](arch: ArchetypeBase, tup: typedesc[T]): tup.varTuple =
+iterator foreach*[T](arch: Archetype, tup: typedesc[T]): tup.varTuple =
   var
-    indices: array[getRequired(T), int]
+    indices: array[getRequired(T), int] # calculate field index once instead of per entity, needed cause tuples ar order invariant
     found = 0
 
   tup.forTuplefields:
-    block searching:
-      for i in 0..<arch.typeCount:
-        when Field is Not:
-          if arch.types[i] == Field.getTheTypeInfo: # We hit on a `Not` exiting
-            found = -1
-            break searching
-        else:
-          if arch.types[i] == Field.getTheTypeInfo: # We found a proper field
-            indices[found] = i
-            inc found
-            if found >= indices.len:
-              break
+    when Field is Not:
+      if Field.getTheTypeInfo in arch.types: # We hit on a `Not` exiting
+        found = -1
+        break
+    else:
+      if Field.getTheTypeInfo in arch.types: # We found a proper field
+        indices[found] = arch.typeToIndex[Field.getTheTypeInfo()]
+        inc found
 
   if found == indices.len:
     for i in 0..<arch.len:
-      var def = default tup
-      yield arch.generateAccess(i, indices, def)
+      yield arch.generateAccess(i, indices, tup)
 
 macro yieldIteratorImpl(call: untyped, typ: typed): untyped =
   let arg = ident"arg"
@@ -320,7 +334,7 @@ macro yieldIteratorImpl(call: untyped, typ: typed): untyped =
 template yieldIterator(call: untyped): untyped =
   yieldIteratorImpl(call, typeof(call))
 
-iterator foreach*(archs: openarray[ArchetypeBase], tup: typedesc[ComponentTuple], filtered: static bool = true): tup.varTuple =
+iterator foreach*(archs: openarray[Archetype], tup: typedesc[ComponentTuple], filtered: static bool = true): tup.varTuple =
   when filtered:
     for arch in archs.filter(tup):
       yieldIterator arch.foreach(tup)
@@ -332,26 +346,24 @@ iterator foreach*(world: World, t: typedesc[ComponentTuple]): t.varTuple =
   for arch in world.archetypes:
     yieldIterator arch.foreach(t)
 
-proc isApartOf*[T: ComponentTuple](entity: typedesc[T], arch: ArchetypeBase): bool =
+proc isApartOf*[T: ComponentTuple](entity: typedesc[T], arch: Archetype): bool =
   ## Is this component tuple exactly this `arch`
   if tupleLen(T) == arch.typeCount:
-    var i = 0
     forTuplefields(T):
-      if arch.types[i] != Field.getTheTypeInfo():
+      if Field.getTheTypeInfo() notin arch.types:
         return false
-      inc i
 
     result = true
 
-proc getArch*(world: World, T: typedesc[ComponentTuple]): Archetype[T] =
+proc getArch*(world: World, T: typedesc[ComponentTuple]): Archetype =
   for arch in world.archetypes:
     if T.isApartOf(arch):
-      return Archetype[T](arch)
+      return arch
 
 proc addEntity*[T: ComponentTuple](world: var World, entity: sink T): Entity {.discardable.} =
   for archId, arch in world.archetypes:
     if T.isApartOf(arch): # We found an arch, we can just add an entity and return it
-      Archetype[T](arch).add entity
+      arch.add entity
       let ent = Entity(archIndex: archId, entIndex: arch.len - 1)
       world.entityPointers[arch].add ent
       return ent
@@ -360,7 +372,7 @@ proc addEntity*[T: ComponentTuple](world: var World, entity: sink T): Entity {.d
   newArch.add entity
   world.archetypes.add newArch
   let ent = Entity(archIndex: world.archeTypes.high, entIndex: newArch.len - 1)
-  world.entityPointers[ArchetypeBase newArch] = @[ent]
+  world.entityPointers[newArch] = @[ent]
   ent
 
 iterator component*[T: not tuple](world: var World, entity: Entity, _: typedesc[T]): var T =
@@ -385,29 +397,21 @@ iterator components*[T: tuple](world: var World, entity: Entity, tup: typedesc[T
   var
     indices: array[getRequired(T), int]
     found = 0
-    def: T
     arch = world.archetypes[entity.archIndex]
 
-  for field in def.fields: # Our tuples our order invariant, we need to find the (int, float) -> (float, int) transformation
-
-    if found >= indices.len:
-      break
-
-    for i in 0..<arch.typeCount:
-      when field is Not:
-        if arch.types[i] == field.typeof.getTheTypeInfo:
-          found = -1
-          break
-      else:
-        if arch.types[i] == field.typeof.getTheTypeInfo:
-          indices[found] = i
-          inc found
-          if found >= indices.len:
-            break
+  forTuplefields(tup.varTuple):
+    when Field is Not:
+      if Field.getTheTypeInfo() in arch.types[i]:
+        found = -1
+        break
+    else:
+      if Field.getTheTypeInfo() in arch.types:
+        indices[found] = arch.typeToIndex[Field.getTheTypeInfo()]
+        inc found
 
   if found == indices.len:
     for i in 0..<arch.len:
-      yield arch.generateAccess(i, indices, def)
+      yield arch.generateAccess(i, indices, tup.varTuple)
 
 proc addComponent*[T](world: var World, entity: Entity, component: sink T) =
   let fromArch = world.archetypes[entity.archIndex]
@@ -416,11 +420,10 @@ proc addComponent*[T](world: var World, entity: Entity, component: sink T) =
     thisCompTypeInfo = T.getTheTypeInfo
     neededComponents = fromArch.types
 
-  if thisCompTypeInfo notin neededComponents: # Dont add more fields than required
-    neededComponents.add thisCompTypeInfo
+  neededComponents.incl thisCompTypeInfo
 
   var
-    arch: ArchetypeBase
+    arch: Archetype
     ind = 0
     hasOldArch = false
 
@@ -438,17 +441,18 @@ proc addComponent*[T](world: var World, entity: Entity, component: sink T) =
         if ent.entIndex > entity.entIndex:
           dec ent.entIndex
 
+  echo "Moved entity: ", entity.entIndex,  " from: ", fromArch.types, " to ", arch.types, " with id ", arch.len
   fromArch.moveEntity(arch, entity.entIndex)
   entity.archIndex = ind
   entity.entIndex = arch.len - 1
   
-  for i, typ in arch.types: # We need to find where we have to copy this new component
-    if thisCompTypeInfo == typ:
-      const size = sizeof(component)
-      let startLen = arch.data[i].len
-      arch.data[i].setLen(startLen + size)
-      arch.sinkHooks[i](arch.data[i][startLen].addr, component.addr)
-      break
+
+  const size = sizeof(component)
+  let
+    dataInd = arch.typeToIndex[thisCompTypeInfo]
+    startLen = arch.data[dataInd].len
+  arch.data[dataInd].setLen(startLen + size)
+  arch.sinkHooks[dataInd](arch.data[dataInd][startLen].addr, component.addr)
 
   if not hasOldArch:
     world.archetypes.add arch
@@ -461,12 +465,11 @@ proc removeComponent*[T](world: var World, entity: var Entity, comp: typedesc[T]
     thisCompTypeInfo = comp.getTheTypeInfo
     neededComponents = fromArch.types
 
-  if (let foundIndex = neededComponents.find(thisCompTypeInfo); foundIndex > 0):
-    neededComponents.delete(foundIndex)
+  neededComponents.excl thisCompTypeInfo
 
   if neededComponents.len > 0: # We still have components, we need to move this entity
     var
-      arch: ArchetypeBase
+      arch: Archetype
       ind = 0
       hasOldArch = false
 
@@ -478,14 +481,12 @@ proc removeComponent*[T](world: var World, entity: var Entity, comp: typedesc[T]
     if arch.isNil: # We dont have an arch that fits the type we need, make one
       arch = makeArchetype(neededComponents, world.archeTypes[entity.archIndex], component)
       ind = world.archetypes.len
+      world.archetypes.add arch
 
 
     fromArch.moveEntity(arch, entity.entIndex)
     entity.archIndex = ind
     entity.entIndex = arch.len - 1
-
-    if not hasOldArch:
-      world.archetypes.add arch
 
   else:
     fromArch.removeEntity(entity.entIndex)
@@ -537,6 +538,5 @@ when isMainModule:
     assert pos == Position(x: 300, y: 10, z: 40)
     assert health == Health(current: 100, max: 130)
 
-  echo $world.getArch (Position, )
-  echo world.getArch (Position, Health)
-  echo world.getArch (Health, )
+  for arch in world.archetypes:
+    echo arch
