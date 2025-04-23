@@ -131,7 +131,7 @@ proc newBall(r, x, y, dx, dy: float; bounce: bool; ddx, ddy = 0d; coeff = 1.0; i
 
   if isSquare:
     world.addComponent(ent, Square())
-  world.addComponent(ent, true)
+  #world.addComponent(ent, true)
 
 
 

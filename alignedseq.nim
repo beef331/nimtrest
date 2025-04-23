@@ -60,7 +60,7 @@ proc setLen*[T](aseq: var AlignedSeq[T], len: int) =
   when defined(debugAseq):
     echo "Set len: ", len, " from ", aseq.len
   if len == aseq.len:
-    discard
+    return
   elif len <= aseq.cap:
     for i in len..<aseq.len:
       reset aseq.data[i]
@@ -68,13 +68,15 @@ proc setLen*[T](aseq: var AlignedSeq[T], len: int) =
   else:
     let
       newSize =
-        if aseq.cap == 0:
+        if aseq.data == nil:
           len
         else:
           aseq.cap div 2 * 3
       startLen = aseq.len
       oldData = aseq.data
+
     aseq.data = allocPayload[T](aseq.alignment, newSize)
+
     if startLen > 0:
       copyMem(aseq.data, oldData, payloadSize[T](aseq.alignment, startLen))
       zeroMem(aseq.data[startLen].addr, newSize - startLen - 1 * sizeof(T))
@@ -133,10 +135,14 @@ proc delete*[T](aseq: var AlignedSeq[T], ind: int) =
 proc delete*[T](aseq: var AlignedSeq[T], rng: Slice[int]) =
   when defined(debugAseq):
     echo "Deleting ", $rng , " from seq with length:  " , aseq.len
+
   for i in rng:
     aseq.indexCheck(i)
     aseq[i] = aseq[rng.b + rng.a - i]
   dec aseq.len, rng.len
+
+  when defined(debugAseq):
+    echo "Len is now: ", aseq.len
 
 iterator items*[T](aseq: AlignedSeq[T]): lent T =
   for i in 0..<aseq.len:

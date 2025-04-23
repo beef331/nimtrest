@@ -3,8 +3,9 @@ This is a not a sincere attempt at an ECS, more a sincere attempt at making an E
 That means yeacs uses a fair bit of runtime type information.
 ]##
 
-import std/[typetraits, macros, genasts, strformat, tables, hashes, sequtils, intsets, packedsets, strutils]
+import std/[typetraits, macros, genasts, strformat, tables, hashes, sequtils, packedsets, strutils]
 import alignedseq
+export tables
 
 proc onlyUniqueValues*(t: typedesc[tuple]): bool =
   result = true
@@ -19,10 +20,10 @@ type
     onlyUniqueValues(CT)
   Not*[T] = distinct T
 
-type TypeInfo = int
 
 type
-  TypeInfos = distinct IntSet
+  TypeInfo = distinct int
+  TypeInfos = PackedSet[TypeInfo]
 
   Entity* = ref object
     archIndex, entIndex: int
@@ -40,30 +41,22 @@ type
 
   World* = object
     archetypes*: seq[Archetype]
-    entityPointers: Table[Archetype, seq[Entity]]
+    entityPointers: seq[Entity]
 
   QueryIndex*[T: ComponentTuple] = object
     indices: seq[int]
     generation: int
 
-proc incl*(t: var TypeInfos, val: int) {.borrow.}
-proc excl*(t: var TypeInfos, val: int) {.borrow.}
-proc `*`*(a, b: TypeInfos): TypeInfos {.borrow.}
-proc contains*(a: TypeInfos, b: int): bool {.borrow.}
-proc `<`*(a, b: TypeInfos): bool {.borrow.}
-proc `<=`*(a, b: TypeInfos): bool {.borrow.}
-proc `==`*(a, b: TypeInfos): bool {.borrow.}
-proc len(a: TypeInfos): int {.borrow.}
-iterator items(a: TypeInfos): int =
-  for x in a.Intset.items:
-    yield x
+proc hash*(t: TypeInfo): Hash {.borrow.}
+proc `==`*(a, b: TypeInfo): bool {.borrow.}
 
 var
   typeInfoCounter {.compiletime.} = 0
   typeInfoNames: Table[TypeInfo, string]
 
 proc getTheTypeInfo*[T](t: typedesc[T]): TypeInfo =
-  result = static: typeInfoCounter
+  const id = typeInfoCounter
+  result = TypeInfo(id)
   once:
     discard typeInfoNames.hasKeyOrPut(result, $T)
   static: inc typeInfoCounter
@@ -93,7 +86,7 @@ macro forTuplefields(tup: typed, body: untyped): untyped =
     let body = body.copyNimTree()
     body.insert 0:
       genast(x):
-        template Field(): untyped = x
+        type Field {.inject.} = x
     result.add nnkIfStmt.newTree(nnkElifBranch.newTree(newLit(true), body))
   result = nnkBlockStmt.newTree(newEmptyNode(), result)
 
@@ -134,8 +127,8 @@ proc makeArchetype*[T](tup: typedesc[T]): Archetype =
 
   forTuplefields(T):
     let fieldId = Field.getTheTypeInfo()
-    result.types.incl fieldId
     result.typeToIndex[fieldId] = result.typeToIndex.len
+    result.types.incl fieldId
     result.sinkHooks.add proc(a, b: pointer) {.nimcall.} =
       let
         a = cast[ptr Field](a)
@@ -148,14 +141,15 @@ proc makeArchetype*[T](tup: typedesc[T]): Archetype =
 
     result.stringHooks.add proc(a: pointer): string {.nimcall.} =
       when compiles($cast[ptr Field](a)[]):
-        "(" & $Field & ")" & $cast[ptr Field](a)[]
+        $Field & $cast[ptr Field](a)[]
       else:
-        "(" & $Field & ")" & "..."
+        $Field & "(...)"
 
 
     result.sizes.add sizeof(Field)
-    result.data.add AlignedSeq[byte].init(alignOf(T))
+    result.data.add AlignedSeq[byte].init(alignOf(Field), cap = sizeof(Field) * 64)
 
+  echo "Created Archetype: ", result.types, " from ", T
 
 proc makeArchetype[T](typeInfo: sink TypeInfos, previous: Archetype, newType: T): Archetype =
   result =
@@ -170,13 +164,14 @@ proc makeArchetype[T](typeInfo: sink TypeInfos, previous: Archetype, newType: T)
     )
 
   let id = T.getTheTypeInfo()
-  result.types.incl id
-  result.typeToIndex[id] = result.typeToIndex.len
+  echo "Created Archetype with: ", result.types, " from: ", previous.types
+  result.typeToIndex[id] = previous.data.len
 
   for i, data in result.data.mpairs:
-    data = AlignedSeq[byte].init(previous.data[i].alignment)
+    data = AlignedSeq[byte].init(previous.data[i].alignment, cap = result.sizes[i] * 64)
 
-  result.data.add AlignedSeq[byte].init(alignOf(T))
+  result.data.add AlignedSeq[byte].init(alignOf(T), cap = sizeof(T) * 64)
+  result.sizes.add sizeof(newType)
 
   result.sinkHooks.add proc(a, b: pointer) =
     let
@@ -190,11 +185,9 @@ proc makeArchetype[T](typeInfo: sink TypeInfos, previous: Archetype, newType: T)
 
   result.stringHooks.add proc(a: pointer): string {.nimcall.} =
     when compiles($cast[ptr T](a)[]):
-      "(" & $T & ")" & $cast[ptr T](a)[]
+      $T & $cast[ptr T](a)[]
     else:
-      "(" & $T & ")" & "..."
-
-  result.sizes.add sizeof(newType)
+      $T & "(...)"
 
 proc `$`*(arch: Archetype): string =
   for ent in 0..<arch.len:
@@ -203,7 +196,12 @@ proc `$`*(arch: Archetype): string =
       let ind = arch.typeToIndex[comp]
       result.add arch.stringHooks[ind](arch.data[ind][ent * arch.sizes[ind]].addr)
       result.add ", "
-    result.add ")"
+    if result.endsWith ", ":
+      result.setLen(result.high - 1)
+
+    result.add "), "
+  if result.endsWith ", ":
+    result.setLen(result.high - 1)
 
 iterator filterInd*[T](archetypes: openarray[Archetype], tup: typedesc[T]): (int, Archetype) =
   ## Iterates archetypes yielding all that can be converted to the tuple and the index.
@@ -244,22 +242,21 @@ proc filter*(archetypes: openarray[Archetype], tup: typedesc[ComponentTuple]): s
 
 proc add*[T](arch: Archetype, tup: sink T) =
   for field in tup.fields: # Iterate each component and copy it to `data`
-    assert field.typeof.getTheTypeInfo() in arch.types
-    let ind = arch.typeToIndex[field.typeof.getTheTypeInfo()]
+    let id = field.typeof.getTheTypeInfo()
+    assert id in arch.types
+    let ind = arch.typeToIndex[id]
 
     let startLen = arch.data[ind].len
     arch.data[ind].setLen(arch.data[ind].len + sizeof(field))
     arch.sinkHooks[ind](arch.data[ind][startLen].addr, field.addr)
   inc arch.len
 
-
 proc removeEntity(arch: Archetype, entityId: int) =
   # This logic handles moving data around the old buffer
   inc arch.generation
   for i, comp in arch.data.mpairs:
-    if comp.len > 0:
-      let size = arch.sizes[i]
-      comp.delete(size * entityId .. size * (entityId + 1) - 1)
+    let size = arch.sizes[i]
+    comp.delete(size * entityId .. size * (entityId + 1) - 1)
   dec arch.len
 
 proc moveEntity(fromArch, toArch: Archetype, entityId: int) =
@@ -365,15 +362,16 @@ proc addEntity*[T: ComponentTuple](world: var World, entity: sink T): Entity {.d
     if T.isApartOf(arch): # We found an arch, we can just add an entity and return it
       arch.add entity
       let ent = Entity(archIndex: archId, entIndex: arch.len - 1)
-      world.entityPointers[arch].add ent
+      world.entityPointers.add ent
       return ent
 
   let newArch = makeArchetype T # No arch found, we need to make a new one then return an ent in it
   newArch.add entity
   world.archetypes.add newArch
   let ent = Entity(archIndex: world.archeTypes.high, entIndex: newArch.len - 1)
-  world.entityPointers[newArch] = @[ent]
+  world.entityPointers.add ent
   ent
+
 
 iterator component*[T: not tuple](world: var World, entity: Entity, _: typedesc[T]): var T =
   ## Return a mutable reference to a component from the entity
@@ -416,9 +414,8 @@ iterator components*[T: tuple](world: var World, entity: Entity, tup: typedesc[T
 proc addComponent*[T](world: var World, entity: Entity, component: sink T) =
   let fromArch = world.archetypes[entity.archIndex]
 
-  var
-    thisCompTypeInfo = T.getTheTypeInfo
-    neededComponents = fromArch.types
+  let thisCompTypeInfo = T.getTheTypeInfo
+  var neededComponents = fromArch.types
 
   neededComponents.incl thisCompTypeInfo
 
@@ -435,27 +432,23 @@ proc addComponent*[T](world: var World, entity: Entity, component: sink T) =
   if arch.isNil: # We dont have an arch that fits the type we need, make one
     arch = makeArchetype(neededComponents, world.archeTypes[entity.archIndex], component)
     ind = world.archetypes.len
-  else:
-    if arch in world.entityPointers:
-      for ent in world.entityPointers[arch]:
-        if ent.entIndex > entity.entIndex:
-          dec ent.entIndex
+    world.archetypes.add arch
 
-  echo "Moved entity: ", entity.entIndex,  " from: ", fromArch.types, " to ", arch.types, " with id ", arch.len
+  for i in world.entityPointers.high.countDown(0):
+    let entPtr = world.entityPointers[i]
+    if entPtr.archIndex == entity.archIndex and entPtr.entIndex > entity.entIndex:
+      dec entptr.entIndex
+
   fromArch.moveEntity(arch, entity.entIndex)
   entity.archIndex = ind
   entity.entIndex = arch.len - 1
   
-
   const size = sizeof(component)
   let
     dataInd = arch.typeToIndex[thisCompTypeInfo]
     startLen = arch.data[dataInd].len
   arch.data[dataInd].setLen(startLen + size)
   arch.sinkHooks[dataInd](arch.data[dataInd][startLen].addr, component.addr)
-
-  if not hasOldArch:
-    world.archetypes.add arch
 
 proc removeComponent*[T](world: var World, entity: var Entity, comp: typedesc[T]) =
   let fromArch = world.archetypes[entity.archIndex]
@@ -515,28 +508,30 @@ when isMainModule:
 
   proc `=copy`(a: var Health, b: Health) {.error.}
   proc `=dup`(a: Health): Health {.error.}
-
-  var world = World()
-  world.addEntity (Position(x: 100, y: 10, z: 10), )
-  world.addEntity (Position(x: 1, y: 10, z: 40), Health())
-  world.addEntity (Health(current: 20, max: 300), )
-  var myent = world.addEntity (Position(x: 1, y: 10, z: 40), )
-  world.addComponent(myEnt, Health())
-
-
-  for props in world.foreach (Position,):
-    props[0].x = 300
-    echo props[0]
-
-  for (health, pos) in world.foreach (Health, Position):
-    pos.x = 300
-    health.current = 100
-    health.max = 130
+  proc main() =
+    var world = World()
+    world.addEntity (Position(x: 100, y: 10, z: 10), )
+    world.addEntity (Position(x: 1, y: 10, z: 40), Health())
+    world.addEntity (Health(current: 20, max: 300), )
+    var myent = world.addEntity (Position(x: 1, y: 10, z: 40), )
+    world.addComponent(myEnt, Health())
 
 
-  for (health, pos) in world.foreach (Health, Position):
-    assert pos == Position(x: 300, y: 10, z: 40)
-    assert health == Health(current: 100, max: 130)
+    for props in world.foreach (Position,):
+      props[0].x = 300
+      echo props[0]
 
-  for arch in world.archetypes:
-    echo arch
+    for (health, pos) in world.foreach (Health, Position):
+      pos.x = 300
+      health.current = 100
+      health.max = 130
+
+
+    for (health, pos) in world.foreach (Health, Position):
+      assert pos == Position(x: 300, y: 10, z: 40)
+      assert health == Health(current: 100, max: 130)
+
+    for arch in world.archetypes:
+      echo arch
+
+  main()
