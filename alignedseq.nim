@@ -106,7 +106,7 @@ proc add*[T](aseq: var AlignedSeq[T], val: sink T) =
 template indexCheck[T](s: AlignedSeq[T], ind: int) =
   when compileOption("boundChecks"):
     if ind notin 0..<aseq.len:
-      {.line: instantiationInfo().}:
+      {.line: instantiationInfo(-1).}:
         raise (ref IndexDefect)(msg: "Index " & $ind & " out of range 0..<" & $aseq.len & ".")
 
 proc `[]`*[T](aseq: AlignedSeq[T], ind: int): lent T =

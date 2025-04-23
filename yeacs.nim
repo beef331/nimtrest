@@ -29,7 +29,6 @@ type
     archIndex, entIndex: int
 
   Archetype* = ref object
-    generation: int # Every time we move an entity or do something to cause an index to be invalidate we increment this, only have 2^64 changes so be careful
     types: TypeInfos
     typeToIndex: Table[TypeInfo, int]
     data: seq[AlignedSeq[byte]] # type erased data collections, the RTTI is used to allocate/move these
@@ -189,6 +188,31 @@ proc makeArchetype[T](typeInfo: sink TypeInfos, previous: Archetype, newType: T)
     else:
       $T & "(...)"
 
+proc makeArchetypeRemoving(previous: Archetype, comp: TypeInfo): Archetype =
+  result = Archetype(
+    sizes: previous.sizes,
+    types: previous.types,
+    typeToIndex: previous.typeToIndex,
+    sinkHooks: previous.sinkHooks,
+    destroyHooks: previous.destroyHooks,
+    stringHooks: previous.stringHooks
+  )
+
+  let toRemove = result.typeToIndex[comp]
+  for i in result.typeToIndex.mvalues:
+    if i > toRemove:
+      dec i
+
+  result.typeToIndex.del(comp)
+  result.sizes.delete(toRemove)
+  result.sinkHooks.delete(toRemove)
+  result.destroyHooks.delete(toRemove)
+  result.stringHooks.delete(toRemove)
+  result.types.excl comp
+
+
+
+
 proc `$`*(arch: Archetype): string =
   for ent in 0..<arch.len:
     result.add "Entity " & $ent & ": ("
@@ -208,20 +232,19 @@ iterator filterInd*[T](archetypes: openarray[Archetype], tup: typedesc[T]): (int
   ## This means they share at least all components of `tup`
   const requiredCount = getRequired(T)
   for i, arch in archetypes:
+    var found = 0
     block search:
       if arch.typeCount >= requiredCount:
-        var found = 0
         forTuplefields(tup):
-          for i in 0..<arch.typeCount:
-            if Field.getTheTypeInfo in arch.types:
-              when Field is Not:
-                found = -1
-                break search
-              else:
-                inc found
+          if Field.getTheTypeInfo in arch.types:
+            when Field is Not:
+              found = 0
+              break search
+            else:
+              inc found
 
-        if found == requiredCount:
-          yield (i, arch)
+    if found == requiredCount:
+      yield (i, arch)
 
 iterator filter*(archetypes: openarray[Archetype], tup: typedesc[ComponentTuple]): Archetype =
   ## Iterates archetypes yielding all that can be converted to the tuple.
@@ -253,7 +276,6 @@ proc add*[T](arch: Archetype, tup: sink T) =
 
 proc removeEntity(arch: Archetype, entityId: int) =
   # This logic handles moving data around the old buffer
-  inc arch.generation
   for i, comp in arch.data.mpairs:
     let size = arch.sizes[i]
     comp.delete(size * entityId .. size * (entityId + 1) - 1)
@@ -352,23 +374,27 @@ proc isApartOf*[T: ComponentTuple](entity: typedesc[T], arch: Archetype): bool =
 
     result = true
 
-proc getArch*(world: World, T: typedesc[ComponentTuple]): Archetype =
-  for arch in world.archetypes:
+proc getArch*(world: World, T: typedesc[ComponentTuple]): tuple[arch: Archetype, id: int] =
+  for id, arch in world.archetypes:
     if T.isApartOf(arch):
-      return arch
+      return (arch, id)
+
+proc getArch*(world: World, info: TypeInfos): tuple[arch: Archetype, id: int] =
+  for id, arch in world.archetypes:
+    if info == arch.types:
+      return (arch, id)
 
 proc addEntity*[T: ComponentTuple](world: var World, entity: sink T): Entity {.discardable.} =
-  for archId, arch in world.archetypes:
-    if T.isApartOf(arch): # We found an arch, we can just add an entity and return it
-      arch.add entity
-      let ent = Entity(archIndex: archId, entIndex: arch.len - 1)
-      world.entityPointers.add ent
-      return ent
+  if (let (arch, id) = world.getArch(T); arch != nil):
+    arch.add entity
+    let ent = Entity(archIndex: id, entIndex: arch.len - 1)
+    world.entityPointers.add ent
+    return ent
 
   let newArch = makeArchetype T # No arch found, we need to make a new one then return an ent in it
   newArch.add entity
+  let ent = Entity(archIndex: world.archeTypes.len, entIndex: 0)
   world.archetypes.add newArch
-  let ent = Entity(archIndex: world.archeTypes.high, entIndex: newArch.len - 1)
   world.entityPointers.add ent
   ent
 
@@ -422,12 +448,8 @@ proc addComponent*[T](world: var World, entity: Entity, component: sink T) =
   var
     arch: Archetype
     ind = 0
-    hasOldArch = false
 
-  for i, filteredArch in world.archetypes.filter(neededComponents):
-    arch = filteredArch
-    hasOldArch = true
-    ind = i
+  (arch, ind) = world.getArch(neededComponents)
 
   if arch.isNil: # We dont have an arch that fits the type we need, make one
     arch = makeArchetype(neededComponents, world.archeTypes[entity.archIndex], component)
@@ -454,25 +476,16 @@ proc removeComponent*[T](world: var World, entity: var Entity, comp: typedesc[T]
   let fromArch = world.archetypes[entity.archIndex]
 
   var
-    component = default(comp)
     thisCompTypeInfo = comp.getTheTypeInfo
     neededComponents = fromArch.types
 
   neededComponents.excl thisCompTypeInfo
 
   if neededComponents.len > 0: # We still have components, we need to move this entity
-    var
-      arch: Archetype
-      ind = 0
-      hasOldArch = false
-
-    for i, filteredArch in world.archetypes.filter(neededComponents):
-      arch = filteredArch
-      hasOldArch = true
-      ind = i
+    var (arch, ind) = world.getArch(neededComponents)
 
     if arch.isNil: # We dont have an arch that fits the type we need, make one
-      arch = makeArchetype(neededComponents, world.archeTypes[entity.archIndex], component)
+      arch = fromArch.makeArchetypeRemoving(thisCompTypeInfo)
       ind = world.archetypes.len
       world.archetypes.add arch
 
