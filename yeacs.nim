@@ -148,7 +148,8 @@ proc makeArchetype*[T](tup: typedesc[T]): Archetype =
     result.sizes.add sizeof(Field)
     result.data.add AlignedSeq[byte].init(alignOf(Field), cap = sizeof(Field) * 64)
 
-  echo "Created Archetype: ", result.types, " from ", T
+  when defined(debugYeacs):
+    echo "Created Archetype: ", result.types, " from ", T
 
 proc makeArchetype[T](typeInfo: sink TypeInfos, previous: Archetype, newType: T): Archetype =
   result =
@@ -163,7 +164,8 @@ proc makeArchetype[T](typeInfo: sink TypeInfos, previous: Archetype, newType: T)
     )
 
   let id = T.getTheTypeInfo()
-  echo "Created Archetype with: ", result.types, " from: ", previous.types
+  when defined(debugYeacs):
+    echo "Created Archetype with: ", result.types, " from: ", previous.types
   result.typeToIndex[id] = previous.data.len
 
   for i, data in result.data.mpairs:
