@@ -30,7 +30,9 @@ proc payloadSize[T](alignment, len: int): int =
 proc allocPayload[T](alignment, len: int): Payload[T] =
   when defined(debugAseq):
     echo "Allocating: ", (Alignment: alignment, Len: len, Payload: payloadSize[T](alignment, len))
-  result = cast[Payload[T]](alignedAlloc(uint alignment, uint payloadSize[T](alignment, len)))
+  # arm limits to multiples of sizeof(pointer) and must be atleast 1 pointer width
+  let actualAlignment = max(alignment, sizeof(pointer))
+  result = cast[Payload[T]](alignedAlloc(uint actualAlignment, uint payloadSize[T](alignment, len)))
   assert result != nil
 
 proc init*[T](t: typedesc[AlignedSeq[T]], alignment: int, len: int, zeroMemory: bool = true): t =

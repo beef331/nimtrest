@@ -305,7 +305,6 @@ macro generateAccess(arch: Archetype, ind: int, indArray: array, tup: typed): un
     if val.kind != nnkBracketExpr or (val.kind == nnkBracketExpr and val[0] != bindSym"Not"):
       result.add:
         genast(val, ind, indArray, i):
-          doAssert arch.data[indArray[i]].len >= 0
           let element = arch.data[indArray[i]][sizeof(val) * ind].addr
           cast[ptr val](element)[]
 
@@ -550,3 +549,4 @@ when isMainModule:
       echo arch
 
   main()
+
