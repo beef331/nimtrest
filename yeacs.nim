@@ -20,13 +20,16 @@ type
     onlyUniqueValues(CT)
   Not*[T] = distinct T
 
-
 type
   TypeInfo = distinct int
   TypeInfos = PackedSet[TypeInfo]
 
   Entity* = ref object
-    archIndex, entIndex: int
+    id*: Id
+    archIndex, entArchIndex: int
+
+  Id* = object
+    value: int
 
   Archetype* = ref object
     types: TypeInfos
@@ -49,16 +52,14 @@ type
 proc hash*(t: TypeInfo): Hash {.borrow.}
 proc `==`*(a, b: TypeInfo): bool {.borrow.}
 
-var
-  typeInfoCounter {.compiletime.} = 0
-  typeInfoNames: Table[TypeInfo, string]
+var typeInfoNames: Table[TypeInfo, string]
 
 proc getTheTypeInfo*[T](t: typedesc[T]): TypeInfo =
-  const id = typeInfoCounter
-  result = TypeInfo(id)
+  var id {.global.}: int
   once:
-    discard typeInfoNames.hasKeyOrPut(result, $T)
-  static: inc typeInfoCounter
+    id = typeInfoNames.len
+    discard typeInfoNames.hasKeyOrPut(TypeInfo(id), $T)
+  result = TypeInfo(id)
 
 proc getTheTypeInfo*[T](t: typedesc[Not[T]]): TypeInfo =
   T.getTheTypeInfo()
@@ -100,7 +101,6 @@ proc `=destroy`(arch: var typeof(Archetype()[])) =
   reset arch.sizes
   reset arch.sinkHooks
   reset arch.destroyHooks
-
 
 proc `hash`*(arch: Archetype): Hash = cast[Hash](arch)
 
@@ -212,9 +212,6 @@ proc makeArchetypeRemoving(previous: Archetype, comp: TypeInfo): Archetype =
   result.stringHooks.delete(toRemove)
   result.types.excl comp
 
-
-
-
 proc `$`*(arch: Archetype): string =
   for ent in 0..<arch.len:
     result.add "Entity " & $ent & ": ("
@@ -302,11 +299,16 @@ proc moveEntity(fromArch, toArch: Archetype, entityId: int) =
 macro generateAccess(arch: Archetype, ind: int, indArray: array, tup: typed): untyped =
   result = nnkTupleConstr.newTree()
   for i, val in tup.getTypeInst[^1]:
+    let val =
+      if val.kind == nnkVarTy:
+        val[0]
+      else:
+        val
     if val.kind != nnkBracketExpr or (val.kind == nnkBracketExpr and val[0] != bindSym"Not"):
       result.add:
         genast(val, ind, indArray, i):
-          let element = arch.data[indArray[i]][sizeof(val) * ind].addr
-          cast[ptr val](element)[]
+          doAssert arch.data[indArray[i]].len >= 0
+          cast[ptr val](arch.data[indArray[i]][sizeof(val) * ind].addr)[]
 
 macro varTuple*(t: typedesc): untyped =
   result = t.getTypeInst[^1].copyNimTree
@@ -385,46 +387,34 @@ proc getArch*(world: World, info: TypeInfos): tuple[arch: Archetype, id: int] =
     if info == arch.types:
       return (arch, id)
 
-proc addEntity*[T: ComponentTuple](world: var World, entity: sink T): Entity {.discardable.} =
-  if (let (arch, id) = world.getArch(T); arch != nil):
-    arch.add entity
-    let ent = Entity(archIndex: id, entIndex: arch.len - 1)
-    world.entityPointers.add ent
-    return ent
+proc addEntity*[T: ComponentTuple](world: var World, components: sink T): Entity {.discardable.} =
+  var (arch, archIndex) = world.getArch(T)
 
-  let newArch = makeArchetype T # No arch found, we need to make a new one then return an ent in it
-  newArch.add entity
-  let ent = Entity(archIndex: world.archeTypes.len, entIndex: 0)
-  world.archetypes.add newArch
-  world.entityPointers.add ent
-  ent
+  if (arch == nil):
+    arch = makeArchetype T # No arch found, we need to make a new one
+    world.archetypes.add arch
 
+  let entityId = world.entityPointers.len
+  let entity = Entity(id: Id(value: entityId), archIndex: archIndex, entArchIndex: arch.len)
+  arch.add components
+  world.entityPointers.add entity
 
-iterator component*[T: not tuple](world: var World, entity: Entity, _: typedesc[T]): var T =
-  ## Return a mutable reference to a component from the entity
-  let 
-    arch = world.archetypes[entity.archIndex]
-    val = default(T)
-    typInfo = val.getTheTypeInfo()
-    ind = block:
-      var val = -1
-      for i, typ in arch.types:
-        if typ == typInfo:
-          val = i
-          break
-      val
-    size = arch.data[ind].len div arch.len
-    theAddr = arch.data[ind][size * entity.entIndex].addr
-  yield cast[ptr T](theAddr)[]
+  for id in world.component(entity, Id):
+    id.value = entityId
+
+  entity
+
+proc getEntity*(world: World, entityId: Id): Entity =
+  world.entityPointers[entityId.value]
 
 iterator components*[T: tuple](world: var World, entity: Entity, tup: typedesc[T]): tup.varTuple =
-  ## Access the mutagle fields directly on an entity
+  ## Access the mutable fields directly on an entity
   var
     indices: array[getRequired(T), int]
     found = 0
     arch = world.archetypes[entity.archIndex]
 
-  forTuplefields(tup.varTuple):
+  forTuplefields(tup):
     when Field is Not:
       if Field.getTheTypeInfo() in arch.types[i]:
         found = -1
@@ -435,8 +425,11 @@ iterator components*[T: tuple](world: var World, entity: Entity, tup: typedesc[T
         inc found
 
   if found == indices.len:
-    for i in 0..<arch.len:
-      yield arch.generateAccess(i, indices, tup.varTuple)
+    yield arch.generateAccess(entity.entArchIndex, indices, tup.varTuple)
+
+iterator component*[T: not tuple](world: var World, entity: Entity, _: typedesc[T]): var T =
+  for component in world.components(entity, (T,)):
+    yield component[0]
 
 proc addComponent*[T](world: var World, entity: Entity, component: sink T) =
   let fromArch = world.archetypes[entity.archIndex]
@@ -459,12 +452,12 @@ proc addComponent*[T](world: var World, entity: Entity, component: sink T) =
 
   for i in world.entityPointers.high.countDown(0):
     let entPtr = world.entityPointers[i]
-    if entPtr.archIndex == entity.archIndex and entPtr.entIndex > entity.entIndex:
-      dec entptr.entIndex
+    if entPtr.archIndex == entity.archIndex and entPtr.entArchIndex > entity.entArchIndex:
+      dec entptr.entArchIndex
 
-  fromArch.moveEntity(arch, entity.entIndex)
+  fromArch.moveEntity(arch, entity.entArchIndex)
   entity.archIndex = ind
-  entity.entIndex = arch.len - 1
+  entity.entArchIndex = arch.len - 1
   
   const size = sizeof(component)
   let
@@ -491,12 +484,12 @@ proc removeComponent*[T](world: var World, entity: var Entity, comp: typedesc[T]
       world.archetypes.add arch
 
 
-    fromArch.moveEntity(arch, entity.entIndex)
+    fromArch.moveEntity(arch, entity.entArchIndex)
     entity.archIndex = ind
-    entity.entIndex = arch.len - 1
+    entity.entArchIndex = arch.len - 1
 
   else:
-    fromArch.removeEntity(entity.entIndex)
+    fromArch.removeEntity(entity.entArchIndex)
 
 iterator query*[T](world: var World, query: var QueryIndex[T]): T.varTuple =
   ## Query using a QueryIndex, this updates the generation pointer and is more efficient than `forEach` directly.
@@ -530,7 +523,6 @@ when isMainModule:
     var myent = world.addEntity (Position(x: 1, y: 10, z: 40), )
     world.addComponent(myEnt, Health())
 
-
     for props in world.foreach (Position,):
       props[0].x = 300
       echo props[0]
@@ -540,6 +532,8 @@ when isMainModule:
       health.current = 100
       health.max = 130
 
+    for health in world.component(myEnt, Health):
+      echo  health.max
 
     for (health, pos) in world.foreach (Health, Position):
       assert pos == Position(x: 300, y: 10, z: 40)
@@ -549,4 +543,3 @@ when isMainModule:
       echo arch
 
   main()
-
