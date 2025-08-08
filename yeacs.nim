@@ -52,16 +52,14 @@ type
 proc hash*(t: TypeInfo): Hash {.borrow.}
 proc `==`*(a, b: TypeInfo): bool {.borrow.}
 
-var
-  typeInfoCounter {.compiletime.} = 0
-  typeInfoNames: Table[TypeInfo, string]
+var typeInfoNames: Table[TypeInfo, string]
 
 proc getTheTypeInfo*[T](t: typedesc[T]): TypeInfo =
-  const id = typeInfoCounter
-  result = TypeInfo(id)
+  var id {.global.}: int
   once:
-    discard typeInfoNames.hasKeyOrPut(result, $T)
-  static: inc typeInfoCounter
+    id = typeInfoNames.len
+    discard typeInfoNames.hasKeyOrPut(TypeInfo(id), $T)
+  result = TypeInfo(id)
 
 proc getTheTypeInfo*[T](t: typedesc[Not[T]]): TypeInfo =
   T.getTheTypeInfo()
@@ -301,12 +299,16 @@ proc moveEntity(fromArch, toArch: Archetype, entityId: int) =
 macro generateAccess(arch: Archetype, ind: int, indArray: array, tup: typed): untyped =
   result = nnkTupleConstr.newTree()
   for i, val in tup.getTypeInst[^1]:
+    let val =
+      if val.kind == nnkVarTy:
+        val[0]
+      else:
+        val
     if val.kind != nnkBracketExpr or (val.kind == nnkBracketExpr and val[0] != bindSym"Not"):
       result.add:
         genast(val, ind, indArray, i):
           doAssert arch.data[indArray[i]].len >= 0
-          let element = arch.data[indArray[i]][sizeof(val) * ind].addr
-          cast[ptr val](element)[]
+          cast[ptr val](arch.data[indArray[i]][sizeof(val) * ind].addr)[]
 
 macro varTuple*(t: typedesc): untyped =
   result = t.getTypeInst[^1].copyNimTree
@@ -397,9 +399,7 @@ proc addEntity*[T: ComponentTuple](world: var World, components: sink T): Entity
   arch.add components
   world.entityPointers.add entity
 
-  echo "Searching for Id(", Id.getTheTypeInfo().int, ") in entity"
   for id in world.component(entity, Id):
-    echo "setting entity id to ", entityId
     id.value = entityId
 
   entity
@@ -414,21 +414,18 @@ iterator components*[T: tuple](world: var World, entity: Entity, tup: typedesc[T
     found = 0
     arch = world.archetypes[entity.archIndex]
 
-  forTuplefields(tup.varTuple):
+  forTuplefields(tup):
     when Field is Not:
       if Field.getTheTypeInfo() in arch.types[i]:
         found = -1
         break
     else:
-      echo "  Checking: ", $Field, "(", Field.getTheTypeInfo().int, ") in arch.types: ", arch.types
       if Field.getTheTypeInfo() in arch.types:
-        echo "  found (", Field.getTheTypeInfo().int, ") in archtype!"
         indices[found] = arch.typeToIndex[Field.getTheTypeInfo()]
         inc found
 
   if found == indices.len:
-    for i in 0..<arch.len:
-      yield arch.generateAccess(i, indices, tup.varTuple)
+    yield arch.generateAccess(entity.entArchIndex, indices, tup.varTuple)
 
 iterator component*[T: not tuple](world: var World, entity: Entity, _: typedesc[T]): var T =
   for component in world.components(entity, (T,)):
